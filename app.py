@@ -100,4 +100,38 @@ init_db()
 def get_whisper():
     return whisper.load_model("tiny")
 
-def convert_and_save_audio(audio_bytes,
+def convert_and_save_audio(audio_bytes, output_wav_path):
+    temp_input = output_wav_path + ".temp"
+    with open(temp_input, "wb") as f:
+        f.write(audio_bytes)
+    cmd = ["ffmpeg", "-y", "-i", temp_input, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output_wav_path]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.exists(temp_input):
+        os.remove(temp_input)
+
+def extract_aligned_audio(audio_bytes, keyword, save_path, is_three_syllable=False):
+    convert_and_save_audio(audio_bytes, save_path)
+    whisper_engine = get_whisper()
+    res = whisper_engine.transcribe(save_path, word_timestamps=True, language="ko")
+    
+    t_start, t_end = None, None
+    for seg in res.get("segments", []):
+        for w in seg.get("words", []):
+            clean = w["word"].replace(" ", "").strip()
+            if keyword in clean:
+                t_start = w["start"]
+                t_end = w["end"]
+                break
+        if t_start is not None:
+            break
+            
+    full_sound = parselmouth.Sound(save_path)
+    if t_start is None or t_end is None:
+        return full_sound, 0.0, full_sound.get_total_duration()
+        
+    if is_three_syllable:
+        span = t_end - t_start
+        t_end = t_start + (span * 0.68)
+        
+    part_sound = full_sound.extract_part(
+        from_time=max(0.0, t_start - 0
