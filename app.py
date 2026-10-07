@@ -194,113 +194,151 @@ if app_mode == "학생 발음 실험 참여":
             ])
 
     conn = sqlite3.connect(DB_PATH)
-    sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets", conn)
+    sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC", conn)
     conn.close()
 
-    set_options = sets_df["set_name"].tolist()
-    chosen_set_name = st.selectbox("📌 2단계: 실습할 음운 대조 세트를 선택하세요", set_options)
-    current_set = sets_df[sets_df["set_name"] == chosen_set_name].iloc[0]
+    total_sets = len(sets_df)
+    if "current_step" not in st.session_state:
+        st.session_state.current_step = 0
 
-    st.info(f"📘 **음운 규칙 해설:** {current_set['description']}")
+    step_idx = st.session_state.current_step
 
-    if "active_set" not in st.session_state or st.session_state.active_set != chosen_set_name:
-        st.session_state.active_set = chosen_set_name
-        st.session_state.rec_t = None
-        st.session_state.rec_c = None
+    if step_idx < total_sets:
+        current_set = sets_df.iloc[step_idx]
 
-    st.markdown("### 🎙️ 3단계: 두 문장 발화 녹음")
-    col_t, col_c = st.columns(2)
-    with col_t:
-        st.subheader(f"문장 A (표적: '{current_set['target_display']}')")
-        st.warning(f"🗣️ **\"{current_set['sentence_target']}\"**")
-        rec_t = mic_recorder(start_prompt="🔴 문장 A 녹음 시작", stop_prompt="⏹️ 녹음 완료", key="mic_t")
-        if rec_t:
-            st.session_state.rec_t = rec_t["bytes"]
-        if st.session_state.rec_t:
-            st.audio(st.session_state.rec_t, format="audio/wav")
+        progress_val = (step_idx) / total_sets
+        st.progress(progress_val, text=f"전체 실험 진행 상황: {step_idx + 1} / {total_sets} 단계 진행 중")
 
-    with col_c:
-        st.subheader(f"문장 B (대조군: '{current_set['control_display']}')")
-        st.info(f"🗣️ **\"{current_set['sentence_control']}\"**")
-        rec_c = mic_recorder(start_prompt="🔴 문장 B 녹음 시작", stop_prompt="⏹️ 녹음 완료", key="mic_c")
-        if rec_c:
-            st.session_state.rec_c = rec_c["bytes"]
-        if st.session_state.rec_c:
-            st.audio(st.session_state.rec_c, format="audio/wav")
+        st.subheader(f"📌 {current_set['set_name']}")
+        st.info(f"📘 **음운 규칙 해설:** {current_set['description']}")
 
-    if st.session_state.rec_t and st.session_state.rec_c:
-        if not st_name.strip():
-            st.error("⚠️ 상단 1단계에서 이름(또는 닉네임)을 입력해 주세요.")
-        else:
-            if st.button("🚀 내 발음 음향 분석 및 판정 결과 확인", use_container_width=True):
-                with st.spinner("Whisper 단어 정렬 및 Praat 음향 지표 산출 중..."):
-                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    path_t = os.path.join(AUDIO_DIR, f"{st_name}_{current_set['target_display']}_{stamp}.wav")
-                    path_c = os.path.join(AUDIO_DIR, f"{st_name}_{current_set['control_display']}_{stamp}.wav")
+        step_rec_t_key = f"rec_t_{current_set['id']}"
+        step_rec_c_key = f"rec_c_{current_set['id']}"
+        if step_rec_t_key not in st.session_state:
+            st.session_state[step_rec_t_key] = None
+        if step_rec_c_key not in st.session_state:
+            st.session_state[step_rec_c_key] = None
 
-                    is_three = ("밟" in current_set['target_keyword'])
-                    snd_t, s_t, e_t = extract_aligned_audio(st.session_state.rec_t, current_set["target_keyword"], path_t, is_three)
-                    snd_c, s_c, e_c = extract_aligned_audio(st.session_state.rec_c, current_set["control_keyword"], path_c, is_three)
+        st.markdown("### 🎙️ 발화 녹음")
+        col_t, col_c = st.columns(2)
+        with col_t:
+            st.markdown(f"**문장 A (표적: '{current_set['target_display']}')**")
+            st.warning(f"🗣️ **\"{current_set['sentence_target']}\"**")
+            rec_t = mic_recorder(start_prompt="🔴 문장 A 녹음 시작", stop_prompt="⏹️ 녹음 완료", key=f"mic_t_{step_idx}")
+            if rec_t:
+                st.session_state[step_rec_t_key] = rec_t["bytes"]
+            if st.session_state[step_rec_t_key]:
+                st.audio(st.session_state[step_rec_t_key], format="audio/wav")
 
-                    prof_t = compute_phonetic_metrics(snd_t)
-                    prof_c = compute_phonetic_metrics(snd_c)
+        with col_c:
+            st.markdown(f"**문장 B (대조군: '{current_set['control_display']}')**")
+            st.info(f"🗣️ **\"{current_set['sentence_control']}\"**")
+            rec_c = mic_recorder(start_prompt="🔴 문장 B 녹음 시작", stop_prompt="⏹️ 녹음 완료", key=f"mic_c_{step_idx}")
+            if rec_c:
+                st.session_state[step_rec_c_key] = rec_c["bytes"]
+            if st.session_state[step_rec_c_key]:
+                st.audio(st.session_state[step_rec_c_key], format="audio/wav")
 
-                    verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set)
+        if st.session_state[step_rec_t_key] and st.session_state[step_rec_c_key]:
+            if not st_name.strip():
+                st.error("⚠️ 상단 1단계에서 이름(또는 닉네임)을 입력해 주세요.")
+            else:
+                if st.button("🚀 이번 세트 음향 분석 및 결과 확인", key=f"btn_eval_{step_idx}", use_container_width=True):
+                    with st.spinner("Whisper 단어 정렬 및 음향 지표 산출 중..."):
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        path_t = os.path.join(AUDIO_DIR, f"{st_name}_{current_set['target_display']}_{stamp}.wav")
+                        path_c = os.path.join(AUDIO_DIR, f"{st_name}_{current_set['control_display']}_{stamp}.wav")
 
-                    conn = sqlite3.connect(DB_PATH)
-                    c = conn.cursor()
-                    c.execute('''
-                        INSERT INTO participant_results (
-                            created_at, student_name, gender, age, hometown,
-                            set_name, target_display, control_display,
-                            f3_drop, duration_target, duration_control, closure_ratio,
-                            classified_label, audio_path_target, audio_path_control
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        st_name.strip(), st_gender, st_age, st_region,
-                        chosen_set_name, current_set["target_display"], current_set["control_display"],
-                        f3_drop, prof_t["duration"], prof_c["duration"], ratio,
-                        verdict, path_t, path_c
-                    ))
-                    conn.commit()
-                    conn.close()
+                        is_three = ("밟" in current_set['target_keyword'])
+                        snd_t, s_t, e_t = extract_aligned_audio(st.session_state[step_rec_t_key], current_set["target_keyword"], path_t, is_three)
+                        snd_c, s_c, e_c = extract_aligned_audio(st.session_state[step_rec_c_key], current_set["control_keyword"], path_c, is_three)
 
-                    st.markdown("---")
-                    st.header(f"🎯 최종 판정 결과: 【 {verdict} 】")
-                    st.write(desc)
+                        prof_t = compute_phonetic_metrics(snd_t)
+                        prof_c = compute_phonetic_metrics(snd_c)
 
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("판정된 현실 발음형", verdict)
-                    m2.metric("F3 포먼트 하강치 (대조군 대비)", f"{int(f3_drop)} Hz", delta=f"{int(-f3_drop)} Hz", delta_color="inverse")
-                    m3.metric("조음 구간 지속시간 비율", f"{ratio:.2f} 배", delta=f"{(ratio-1.0)*100:+.1f}%")
+                        verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set)
 
-                    fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharey="row")
-                    
-                    sg_t = prof_t["spectrogram"]
-                    axes[0, 0].pcolormesh(sg_t.x_grid(), sg_t.y_grid(), 10 * np.log10(sg_t.values), cmap="viridis", shading="auto")
-                    axes[0, 0].plot(prof_t["times"], prof_t["f3"], color="red", linewidth=2.5, label="F3 Track")
-                    axes[0, 0].set_title(f"A. 표적 어절: '{current_set['target_display']}' (추출: {s_t:.2f}s~{e_t:.2f}s)")
-                    axes[0, 0].set_ylim(0, 4500)
-                    axes[0, 0].set_ylabel("Frequency (Hz)")
-                    axes[0, 0].legend(loc="upper right")
+                        conn = sqlite3.connect(DB_PATH)
+                        c = conn.cursor()
+                        c.execute('''
+                            INSERT INTO participant_results (
+                                created_at, student_name, gender, age, hometown,
+                                set_name, target_display, control_display,
+                                f3_drop, duration_target, duration_control, closure_ratio,
+                                classified_label, audio_path_target, audio_path_control
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            st_name.strip(), st_gender, st_age, st_region,
+                            current_set['set_name'], current_set["target_display"], current_set["control_display"],
+                            f3_drop, prof_t["duration"], prof_c["duration"], ratio,
+                            verdict, path_t, path_c
+                        ))
+                        conn.commit()
+                        conn.close()
 
-                    sg_c = prof_c["spectrogram"]
-                    axes[0, 1].pcolormesh(sg_c.x_grid(), sg_c.y_grid(), 10 * np.log10(sg_c.values), cmap="viridis", shading="auto")
-                    axes[0, 1].plot(prof_c["times"], prof_c["f3"], color="red", linewidth=2.5, label="F3 Track")
-                    axes[0, 1].set_title(f"B. 대조 어절: '{current_set['control_display']}' (추출: {s_c:.2f}s~{e_c:.2f}s)")
-                    axes[0, 1].set_ylim(0, 4500)
-                    axes[0, 1].legend(loc="upper right")
+                        st.session_state[f"evaluated_{step_idx}"] = {
+                            "verdict": verdict,
+                            "f3_drop": f3_drop,
+                            "ratio": ratio,
+                            "desc": desc,
+                            "prof_t": prof_t,
+                            "prof_c": prof_c,
+                            "snd_t": snd_t,
+                            "snd_c": snd_c,
+                            "s_t": s_t, "e_t": e_t,
+                            "s_c": s_c, "e_c": e_c
+                        }
 
-                    axes[1, 0].plot(snd_t.xs(), snd_t.values.T, color="#333333")
-                    axes[1, 0].set_title(f"'{current_set['target_display']}' 음향 파형 (지속시간: {prof_t['duration']:.2f}s)")
-                    axes[1, 0].set_xlabel("Time (s)")
+        if f"evaluated_{step_idx}" in st.session_state:
+            ev = st.session_state[f"evaluated_{step_idx}"]
+            st.markdown("---")
+            st.header(f"🎯 판정 결과: 【 {ev['verdict']} 】")
+            st.write(ev['desc'])
 
-                    axes[1, 1].plot(snd_c.xs(), snd_c.values.T, color="#005588")
-                    axes[1, 1].set_title(f"'{current_set['control_display']}' 음향 파형 (지속시간: {prof_c['duration']:.2f}s)")
-                    axes[1, 1].set_xlabel("Time (s)")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("판정된 현실 발음형", ev['verdict'])
+            m2.metric("F3 포먼트 하강치 (대조군 대비)", f"{int(ev['f3_drop'])} Hz", delta=f"{int(-ev['f3_drop'])} Hz", delta_color="inverse")
+            m3.metric("조음 구간 지속시간 비율", f"{ev['ratio']:.2f} 배", delta=f"{(ev['ratio']-1.0)*100:+.1f}%")
 
-                    st.pyplot(fig)
+            fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharey="row")
+            sg_t = ev['prof_t']["spectrogram"]
+            axes[0, 0].pcolormesh(sg_t.x_grid(), sg_t.y_grid(), 10 * np.log10(sg_t.values), cmap="viridis", shading="auto")
+            axes[0, 0].plot(ev['prof_t']["times"], ev['prof_t']["f3"], color="red", linewidth=2.5, label="F3 Track")
+            axes[0, 0].set_title(f"A. 표적 어절: '{current_set['target_display']}' (추출: {ev['s_t']:.2f}s~{ev['e_t']:.2f}s)")
+            axes[0, 0].set_ylim(0, 4500)
+            axes[0, 0].set_ylabel("Frequency (Hz)")
+            axes[0, 0].legend(loc="upper right")
+
+            sg_c = ev['prof_c']["spectrogram"]
+            axes[0, 1].pcolormesh(sg_c.x_grid(), sg_c.y_grid(), 10 * np.log10(sg_c.values), cmap="viridis", shading="auto")
+            axes[0, 1].plot(ev['prof_c']["times"], ev['prof_c']["f3"], color="red", linewidth=2.5, label="F3 Track")
+            axes[0, 1].set_title(f"B. 대조 어절: '{current_set['control_display']}' (추출: {ev['s_c']:.2f}s~{ev['e_c']:.2f}s)")
+            axes[0, 1].set_ylim(0, 4500)
+            axes[0, 1].legend(loc="upper right")
+
+            axes[1, 0].plot(ev['snd_t'].xs(), ev['snd_t'].values.T, color="#333333")
+            axes[1, 0].set_title(f"'{current_set['target_display']}' 음향 파형 (지속시간: {ev['prof_t']['duration']:.2f}s)")
+            axes[1, 0].set_xlabel("Time (s)")
+
+            axes[1, 1].plot(ev['snd_c'].xs(), ev['snd_c'].values.T, color="#005588")
+            axes[1, 1].set_title(f"'{current_set['control_display']}' 음향 파형 (지속시간: {ev['prof_c']['duration']:.2f}s)")
+            axes[1, 1].set_xlabel("Time (s)")
+
+            st.pyplot(fig)
+
+            st.markdown("---")
+            next_label = f"다음 실험 세트({step_idx + 2}단계)로 넘어가기 ➡️" if step_idx + 1 < total_sets else "모든 실험 완료하기 🏁"
+            if st.button(next_label, type="primary", use_container_width=True):
+                st.session_state.current_step += 1
+                st.rerun()
+
+    else:
+        st.progress(1.0, text="모든 실험 세트 완료!")
+        st.success("🎉 준비된 모든 음운 대조 실험 세트의 녹음과 분석이 성공적으로 끝났습니다. 과제 참여 감사합니다!")
+        if st.button("🔄 처음부터 다시 하기"):
+            st.session_state.current_step = 0
+            st.rerun()
 
 elif app_mode == "교수/연구자 관리자 모드":
     st.title("🔒 국어음운론 연구 관리자 시스템")
