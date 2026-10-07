@@ -145,17 +145,29 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three_syllable=Fal
     )
     return part_sound, t_start, t_end
 
-def compute_phonetic_metrics(sound):
-    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=5500.0)
+def compute_phonetic_metrics(sound, gender="여성"):
+    # 성별에 따른 Praat 포먼트 상한치 보정 (남성 5000Hz, 여성 5500Hz)
+    max_formant = 5000.0 if gender == "남성" else 5500.0
+    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_formant)
     spectrogram = sound.to_spectrogram(window_length=0.005)
     times = formants.ts()
     
     f2_vals = [formants.get_value_at_time(2, t) for t in times]
     f3_vals = [formants.get_value_at_time(3, t) for t in times]
     
-    valid_f3 = [v for v in f3_vals if not np.isnan(v)]
-    min_f3 = float(np.min(valid_f3)) if len(valid_f3) > 0 else 0.0
-    mean_f3 = float(np.mean(valid_f3)) if len(valid_f3) > 0 else 0.0
+    dur = float(sound.get_total_duration())
+    
+    # 모음 후반부(자음 전이 구간, 마지막 40%)의 F3 집중 추출
+    t_offset_start = dur * 0.4
+    t_offset_end = dur * 0.85
+    offset_f3 = [
+        formants.get_value_at_time(3, t) 
+        for t in times 
+        if (t >= t_offset_start and t <= t_offset_end and not np.isnan(formants.get_value_at_time(3, t)))
+    ]
+    
+    min_offset_f3 = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
+    mean_offset_f3 = float(np.mean(offset_f3)) if len(offset_f3) > 0 else 0.0
     
     return {
         "sound": sound,
@@ -163,24 +175,44 @@ def compute_phonetic_metrics(sound):
         "times": times,
         "f2": f2_vals,
         "f3": f3_vals,
-        "min_f3": min_f3,
-        "mean_f3": mean_f3,
-        "duration": float(sound.get_total_duration())
+        "min_offset_f3": min_offset_f3,
+        "mean_offset_f3": mean_offset_f3,
+        "duration": dur
     }
 
-def classify_pronunciation(data_target, data_control, set_info):
-    f3_drop = data_control["min_f3"] - data_target["min_f3"]
+def classify_pronunciation(data_target, data_control, set_info, sensitivity="표준 (권장)"):
+    # 칼리브레이션 민감도별 임계값 설정
+    if sensitivity == "높음 (이중조음 민감 감지)":
+        f3_th_hyper = 80.0
+        ratio_th_hyper = 1.08
+        f3_th_alt = 150.0
+    elif sensitivity == "매우 높음":
+        f3_th_hyper = 50.0
+        ratio_th_hyper = 1.03
+        f3_th_alt = 120.0
+    else:  # 표준 (권장)
+        f3_th_hyper = 110.0
+        ratio_th_hyper = 1.12
+        f3_th_alt = 180.0
+
+    # 모음 말단부(transition)의 F3 하강량 비교
+    f3_drop = data_control["min_offset_f3"] - data_target["min_offset_f3"]
     ratio = data_target["duration"] / (data_control["duration"] + 1e-6)
     
-    if f3_drop > 180 and ratio >= 1.25:
+    # 판정 로직
+    if f3_drop >= f3_th_hyper and ratio >= ratio_th_hyper:
         verdict = set_info["cand_hyper"]
-        desc = "모음 [아] 말단의 F3 하강과 함께 조음 제스처 중첩으로 인한 지속시간 지연이 모두 뚜렷하여 두 자음 성분을 모두 의식한 이중조음형에 해당합니다."
-    elif f3_drop > 220 and ratio < 1.25:
+        desc = "모음 말단에서 F3 포먼트의 현저한 하강과 함께 조음 중첩에 따른 지속시간 연장이 관찰되어 [ㄹ]과 폐쇄음 성분이 함께 고려된 '이중조음형'으로 판정되었습니다."
+    elif f3_drop >= f3_th_alt and ratio < ratio_th_hyper:
         verdict = set_info["cand_alt"]
-        desc = "폐쇄음 조음이 약화되고 유음 [ㄹ] 성분이 지배적으로 실현되어 [ㄹ] 선택형 단순화 발음에 해당합니다."
+        desc = "폐쇄음 성분이 약화되고 유음 [ㄹ] 성분이 지배적으로 실현되어 '[ㄹ] 선택형 단순화' 발음으로 판정되었습니다."
+    elif f3_drop >= f3_th_hyper and ratio < ratio_th_hyper:
+        # 지속시간은 짧으나 F3 하강이 뚜렷한 경우도 이중조음의 일종으로 수용
+        verdict = set_info["cand_hyper"]
+        desc = "발화 속도가 다소 빠르나 모음 말단 F3 궤적에서 유음화 조음 제스처의 잔여 효과가 포착되어 '이중조음형'에 가깝게 분류되었습니다."
     else:
         verdict = set_info["cand_std"]
-        desc = "대조군과 F3 포먼트 궤적 및 폐쇄 구간 길이가 일치하며, 겹받침이 표준 규정에 맞게 단일 폐쇄음으로 깨끗이 단순화되었습니다."
+        desc = "대조군과 F3 전이 궤적 및 지속시간 패턴이 일치하여, 겹받침이 규범에 맞게 단일 폐쇄음으로 깔끔하게 단순화되었습니다."
         
     return verdict, f3_drop, ratio, desc
 
@@ -198,15 +230,22 @@ if app_mode == "학생 발음 실험 참여":
         with c2:
             st_gender = st.selectbox("성별", ["여성", "남성", "기타"])
         with c3:
-            # 최소 5세부터 90세까지 자유 입력 가능, step=1로 버튼 클릭 및 직접 타이핑 정상 작동
             st_age = st.number_input("나이(만)", min_value=5, max_value=90, value=22, step=1)
         with c4:
             st_region = st.selectbox("유년기 성장 지역", [
                 "수도권(서울/경기/인천)", "경남(창원/마산/진주 등)", "부산", "대구", "경북",
                 "충청도", "전라도", "강원도", "제주도", "기타/해외"
             ])
+            
+        # 음향 민감도 칼리브레이션 옵션
+        st.markdown("⚙️ **음향 분석 민감도 (칼리브레이션)**")
+        sensitivity_opt = st.radio(
+            "이중조음(유음 [ㄹ] 성분) 감지 민감도:",
+            ["표준 (권장)", "높음 (이중조음 민감 감지)", "매우 높음"],
+            horizontal=True,
+            help="마이크 감도가 낮거나 평소 말하는 속도가 빠른 경우 '높음'을 선택하면 미세한 조음 제스처를 더 잘 포착합니다."
+        )
 
-    # 필수 실험 세트 1과 2, 총 2개로만 한정하여 로드 (LIMIT 2)
     conn = sqlite3.connect(DB_PATH)
     sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC LIMIT 2", conn)
     conn.close()
@@ -272,10 +311,10 @@ if app_mode == "학생 발음 실험 참여":
                         snd_t, s_t, e_t = extract_aligned_audio(st.session_state[step_rec_t_key], current_set["target_keyword"], path_t, is_three)
                         snd_c, s_c, e_c = extract_aligned_audio(st.session_state[step_rec_c_key], current_set["control_keyword"], path_c, is_three)
 
-                        prof_t = compute_phonetic_metrics(snd_t)
-                        prof_c = compute_phonetic_metrics(snd_c)
+                        prof_t = compute_phonetic_metrics(snd_t, gender=st_gender)
+                        prof_c = compute_phonetic_metrics(snd_c, gender=st_gender)
 
-                        verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set)
+                        verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set, sensitivity=sensitivity_opt)
 
                         conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
@@ -358,7 +397,7 @@ if app_mode == "학생 발음 실험 참여":
 
             m1, m2, m3 = st.columns(3)
             m1.metric("최종 판정형", ev['verdict'])
-            m2.metric("F3 포먼트 하강치 (대조군 대비)", f"{int(ev['f3_drop'])} Hz", delta=f"{int(-ev['f3_drop'])} Hz", delta_color="inverse")
+            m2.metric("모음 말단 F3 하강치 (대조군 대비)", f"{int(ev['f3_drop'])} Hz", delta=f"{int(-ev['f3_drop'])} Hz", delta_color="inverse")
             m3.metric("조음 구간 지속시간 비율", f"{ev['ratio']:.2f} 배", delta=f"{(ev['ratio']-1.0)*100:+.1f}%")
 
             fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharey="row")
