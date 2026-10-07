@@ -145,8 +145,8 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three_syllable=Fal
     )
     return part_sound, t_start, t_end
 
-def compute_phonetic_metrics(sound, gender="여성"):
-    # 성별에 따른 Praat 포먼트 상한치 보정 (남성 5000Hz, 여성 5500Hz)
+def compute_phonetic_metrics(sound, gender="남성"):
+    # 성별에 따른 Praat Burg 포먼트 최적 상한치 (남성 5000Hz, 여성 5500Hz)
     max_formant = 5000.0 if gender == "남성" else 5500.0
     formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_formant)
     spectrogram = sound.to_spectrogram(window_length=0.005)
@@ -157,7 +157,7 @@ def compute_phonetic_metrics(sound, gender="여성"):
     
     dur = float(sound.get_total_duration())
     
-    # 모음 후반부(자음 전이 구간, 마지막 40%)의 F3 집중 추출
+    # 모음 후반부(자음 전이 구간) F3 집중 추출
     t_offset_start = dur * 0.4
     t_offset_end = dur * 0.85
     offset_f3 = [
@@ -180,36 +180,24 @@ def compute_phonetic_metrics(sound, gender="여성"):
         "duration": dur
     }
 
-def classify_pronunciation(data_target, data_control, set_info, sensitivity="표준 (권장)"):
-    # 칼리브레이션 민감도별 임계값 설정
-    if sensitivity == "높음 (이중조음 민감 감지)":
-        f3_th_hyper = 80.0
-        ratio_th_hyper = 1.08
-        f3_th_alt = 150.0
-    elif sensitivity == "매우 높음":
-        f3_th_hyper = 50.0
-        ratio_th_hyper = 1.03
-        f3_th_alt = 120.0
-    else:  # 표준 (권장)
-        f3_th_hyper = 110.0
-        ratio_th_hyper = 1.12
-        f3_th_alt = 180.0
+def classify_pronunciation(data_target, data_control, set_info):
+    # 일반 마이크 환경 및 자연 발화에 최적화된 고감도 기준 고정
+    f3_th_hyper = 70.0      # 모음 말단 F3 하강치 (70Hz 이상이면 유음 잔여 조음 감지)
+    ratio_th_hyper = 1.06   # 조음 구간 지속시간 (대조군 대비 6% 이상 연장 시 제스처 중첩 인정)
+    f3_th_alt = 160.0       # 폐쇄음이 탈락하고 ㄹ이 지배적인 경우
 
-    # 모음 말단부(transition)의 F3 하강량 비교
     f3_drop = data_control["min_offset_f3"] - data_target["min_offset_f3"]
     ratio = data_target["duration"] / (data_control["duration"] + 1e-6)
     
-    # 판정 로직
     if f3_drop >= f3_th_hyper and ratio >= ratio_th_hyper:
         verdict = set_info["cand_hyper"]
-        desc = "모음 말단에서 F3 포먼트의 현저한 하강과 함께 조음 중첩에 따른 지속시간 연장이 관찰되어 [ㄹ]과 폐쇄음 성분이 함께 고려된 '이중조음형'으로 판정되었습니다."
+        desc = "모음 말단에서 F3 포먼트의 뚜렷한 하강과 함께 조음 제스처 중첩으로 인한 지속시간 연장이 관찰되어 [ㄹ]과 폐쇄음 성분이 함께 고려된 '이중조음형'으로 판정되었습니다."
     elif f3_drop >= f3_th_alt and ratio < ratio_th_hyper:
         verdict = set_info["cand_alt"]
         desc = "폐쇄음 성분이 약화되고 유음 [ㄹ] 성분이 지배적으로 실현되어 '[ㄹ] 선택형 단순화' 발음으로 판정되었습니다."
     elif f3_drop >= f3_th_hyper and ratio < ratio_th_hyper:
-        # 지속시간은 짧으나 F3 하강이 뚜렷한 경우도 이중조음의 일종으로 수용
         verdict = set_info["cand_hyper"]
-        desc = "발화 속도가 다소 빠르나 모음 말단 F3 궤적에서 유음화 조음 제스처의 잔여 효과가 포착되어 '이중조음형'에 가깝게 분류되었습니다."
+        desc = "발화 속도가 다소 빠르나 모음 말단 F3 궤적에서 유음화 조음 제스처의 잔여 효과가 포착되어 '이중조음형'으로 분류되었습니다."
     else:
         verdict = set_info["cand_std"]
         desc = "대조군과 F3 전이 궤적 및 지속시간 패턴이 일치하여, 겹받침이 규범에 맞게 단일 폐쇄음으로 깔끔하게 단순화되었습니다."
@@ -236,15 +224,6 @@ if app_mode == "학생 발음 실험 참여":
                 "수도권(서울/경기/인천)", "경남(창원/마산/진주 등)", "부산", "대구", "경북",
                 "충청도", "전라도", "강원도", "제주도", "기타/해외"
             ])
-            
-        # 음향 민감도 칼리브레이션 옵션
-        st.markdown("⚙️ **음향 분석 민감도 (칼리브레이션)**")
-        sensitivity_opt = st.radio(
-            "이중조음(유음 [ㄹ] 성분) 감지 민감도:",
-            ["표준 (권장)", "높음 (이중조음 민감 감지)", "매우 높음"],
-            horizontal=True,
-            help="마이크 감도가 낮거나 평소 말하는 속도가 빠른 경우 '높음'을 선택하면 미세한 조음 제스처를 더 잘 포착합니다."
-        )
 
     conn = sqlite3.connect(DB_PATH)
     sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC LIMIT 2", conn)
@@ -314,7 +293,7 @@ if app_mode == "학생 발음 실험 참여":
                         prof_t = compute_phonetic_metrics(snd_t, gender=st_gender)
                         prof_c = compute_phonetic_metrics(snd_c, gender=st_gender)
 
-                        verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set, sensitivity=sensitivity_opt)
+                        verdict, f3_drop, ratio, desc = classify_pronunciation(prof_t, prof_c, current_set)
 
                         conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
@@ -576,16 +555,4 @@ elif app_mode == "교수/연구자 관리자 모드":
             pick_id = st.selectbox(
                 "확인할 데이터를 선택하세요:",
                 df_all['id'].tolist(),
-                format_func=lambda x: f"ID {x} | {df_all.loc[df_all['id']==x, 'student_name'].values[0]} ({df_all.loc[df_all['id']==x, 'hometown'].values[0]}) - {df_all.loc[df_all['id']==x, 'classified_label'].values[0]}"
-            )
-            row_data = df_all[df_all['id'] == pick_id].iloc[0]
-
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                st.caption(f"표적 어절 ('{row_data['target_display']}') 음성:")
-                if os.path.exists(row_data['audio_path_target']):
-                    st.audio(row_data['audio_path_target'])
-            with col_p2:
-                st.caption(f"대조 어절 ('{row_data['control_display']}') 음성:")
-                if os.path.exists(row_data['audio_path_control']):
-                    st.audio(row_data['audio_path_control'])
+                format_func=lambda x: f"ID {x} | {
