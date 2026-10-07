@@ -1,0 +1,8 @@
+streamlit>=1.35.0
+streamlit-mic-recorder>=0.0.8
+praat-parselmouth>=0.4.3
+openai-whisper>=20231117
+numpy<2.0.0
+matplotlib>=3.8.0
+pandas>=2.0.0
+scipy>=1.11.0
