@@ -57,12 +57,36 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
     for seg in res.get("segments", []):
         for w in seg.get("words", []):
             if keyword in w["word"].replace(" ", "").strip():
-                t_start, t_end = w["start"], w["end"]
+                t_start = float(w["start"])
+                t_end = float(w["end"])
                 break
         if t_start is not None:
             break
     sound = parselmouth.Sound(save_path)
+    total_len = float(sound.get_total_duration())
     if t_start is None or t_end is None:
-        return sound, 0.0, sound.get_total_duration()
+        return sound, 0.0, total_len
     if is_three:
-        t_end = t_start + ((t_end - t_
+        diff = t_end - t_start
+        t_end = t_start + (diff * 0.68)
+    p_start = max(0.0, t_start - 0.03)
+    p_end = min(total_len, t_end + 0.03)
+    part = sound.extract_part(from_time=p_start, to_time=p_end, preserve_times=False)
+    return part, t_start, t_end
+
+def compute_phonetic_metrics(sound, gender="남성"):
+    max_f = 5000.0 if gender == "남성" else 5500.0
+    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_f)
+    spectrogram = sound.to_spectrogram(window_length=0.005)
+    times = formants.ts()
+    f3_vals = [formants.get_value_at_time(3, t) for t in times]
+    dur = float(sound.get_total_duration())
+    t1 = dur * 0.4
+    t2 = dur * 0.85
+    offset_f3 = [formants.get_value_at_time(3, t) for t in times if t1 <= t <= t2 and not np.isnan(formants.get_value_at_time(3, t))]
+    min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
+    return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
+
+def classify_pronunciation(d_t, d_c, s_info):
+    drop = d_c["min_off"] - d_t["min_off"]
+    ratio = d_t["duration"] / (
