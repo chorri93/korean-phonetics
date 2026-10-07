@@ -92,16 +92,16 @@ def classify_pronunciation(d_t, d_c, s_info):
     ratio = d_t["duration"] / denom
     if drop >= 70.0 and ratio >= 1.06:
         verdict = s_info["cand_hyper"]
-        desc = "모음 말단에서 F3 포먼트 하강과 조음 중첩으로 인한 지속시간 연장이 확인되어 '이중조음형'으로 판정되었습니다."
+        desc = "모음 말단 F3 하강과 지속시간 연장이 확인되어 '이중조음형'으로 판정되었습니다."
     elif drop >= 160.0 and ratio < 1.06:
         verdict = s_info["cand_alt"]
-        desc = "폐쇄음이 약화되고 유음 성분이 뚜렷하게 실현되어 '[ㄹ] 선택형 단순화'로 판정되었습니다."
+        desc = "폐쇄음이 약화되고 유음 성분이 뚜렷하여 '[ㄹ] 선택형 단순화'로 판정되었습니다."
     elif drop >= 70.0 and ratio < 1.06:
         verdict = s_info["cand_hyper"]
-        desc = "모음 말단 F3 궤적에서 유음 조음 잔여 효과가 포착되어 '이중조음형'으로 판정되었습니다."
+        desc = "모음 말단 F3 궤적에서 유음 잔여 효과가 포착되어 '이중조음형'으로 판정되었습니다."
     else:
         verdict = s_info["cand_std"]
-        desc = "대조군과 F3 궤적 및 지속시간이 일치하여 규범에 맞게 단일 폐쇄음으로 단순화되었습니다."
+        desc = "대조군과 F3 궤적이 일치하여 단일 폐쇄음으로 단순화되었습니다."
     return verdict, drop, ratio, desc
 
 def plot_phonetics(snd_t, snd_c, pf_t, pf_c, w_t, w_c):
@@ -134,7 +134,7 @@ if app_mode == "학생 발음 실험 참여":
 
     with st.expander("👤 1단계: 연구 참가자 기본 정보 입력", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
-        with c1: st_name = st.text_input("이름 (또는 닉네임)", placeholder="예: 국어과_김철수")
+        with c1: st_name = st.text_input("이름 (또는 닉네임)")
         with c2: st_gender = st.selectbox("성별", ["여성", "남성", "기타"])
         with c3: st_age = st.number_input("나이(만)", 5, 90, 22, 1)
         with c4: st_region = st.selectbox("유년기 성장 지역", ["수도권(서울/경기/인천)", "경남(창원/마산/진주 등)", "부산", "대구", "경북", "충청도", "전라도", "강원도", "제주도", "기타/해외"])
@@ -250,7 +250,7 @@ elif app_mode == "교수/연구자 관리자 모드":
             st.session_state.admin_logged_in = False
             st.rerun()
 
-        t1, t2, t3 = st.tabs(["📊 전체 발음 통계 분석", "➕ 신규 자극문 등록", "🎧 참여자 데이터 다중 선택 및 삭제"])
+        t1, t2 = st.tabs(["📊 전체 발음 통계 분석", "🎧 참여자 데이터 다중 선택 및 삭제"])
         conn = sqlite3.connect(DB_PATH)
         df_all = pd.read_sql_query("SELECT * FROM participant_results ORDER BY id DESC", conn)
         conn.close()
@@ -268,5 +268,41 @@ elif app_mode == "교수/연구자 관리자 모드":
                 st.dataframe(pd.crosstab(df_all['hometown'], df_all['classified_label'], margins=True), use_container_width=True)
 
         with t2:
-            with st.form("new_stim_form"):
-                ns_title = st.text_input("실험 세트 제목", placeholder="예: 세
+            if df_all.empty:
+                st.info("수집된 데이터가 없습니다.")
+            else:
+                st.download_button("💾 전체 CSV 다운로드", df_all.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), f"corpus_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+                st.dataframe(df_all[['id', 'created_at', 'student_name', 'gender', 'age', 'hometown', 'set_name', 'classified_label', 'f3_drop', 'closure_ratio']], use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("🎧 개별 참여자 음성 들어보기")
+                pid = st.selectbox("대상 선택:", df_all['id'].tolist(), format_func=lambda x: f"ID {x} | {df_all.loc[df_all['id']==x, 'student_name'].values[0]} ({df_all.loc[df_all['id']==x, 'hometown'].values[0]}) - {df_all.loc[df_all['id']==x, 'classified_label'].values[0]}")
+                r_sel = df_all[df_all['id'] == pid].iloc[0]
+                ca1, ca2 = st.columns(2)
+                with ca1:
+                    st.caption(f"'{r_sel['target_display']}' 음성:")
+                    if os.path.exists(r_sel['audio_path_target']): st.audio(r_sel['audio_path_target'])
+                with ca2:
+                    st.caption(f"'{r_sel['control_display']}' 음성:")
+                    if os.path.exists(r_sel['audio_path_control']): st.audio(r_sel['audio_path_control'])
+
+                st.markdown("---")
+                st.subheader("🗑️ 데이터 선택 삭제 (다중 선택)")
+                opts = {r['id']: f"ID {r['id']} | {r['student_name']} ({r['hometown']}) - {r['classified_label']}" for _, r in df_all.iterrows()}
+                sel_ids = st.multiselect("삭제 대상 선택:", list(opts.keys()), format_func=lambda x: opts[x])
+                if sel_ids:
+                    chk = st.checkbox(f"선택한 {len(sel_ids)}건의 데이터 및 음성 파일을 영구 삭제합니다.")
+                    if st.button(f"🚨 선택된 {len(sel_ids)}건 삭제 실행", type="primary", disabled=not chk, use_container_width=True):
+                        for did in sel_ids:
+                            t_r = df_all[df_all['id'] == did]
+                            if not t_r.empty:
+                                r_v = t_r.iloc[0]
+                                if os.path.exists(r_v['audio_path_target']): os.remove(r_v['audio_path_target'])
+                                if os.path.exists(r_v['audio_path_control']): os.remove(r_v['audio_path_control'])
+                        conn = sqlite3.connect(DB_PATH)
+                        phs = ",".join(["?"] * len(sel_ids))
+                        conn.cursor().execute(f"DELETE FROM participant_results WHERE id IN ({phs})", sel_ids)
+                        conn.commit()
+                        conn.close()
+                        st.success("삭제 완료!")
+                        st.rerun()
