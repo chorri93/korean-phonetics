@@ -120,33 +120,4 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three_syllable=Fal
     res = whisper_engine.transcribe(save_path, word_timestamps=True, language="ko")
     
     t_start, t_end = None, None
-    for seg in res.get("segments", []):
-        for w in seg.get("words", []):
-            clean = w["word"].replace(" ", "").strip()
-            if keyword in clean:
-                t_start = w["start"]
-                t_end = w["end"]
-                break
-        if t_start is not None:
-            break
-            
-    full_sound = parselmouth.Sound(save_path)
-    if t_start is None or t_end is None:
-        return full_sound, 0.0, full_sound.get_total_duration()
-        
-    if is_three_syllable:
-        span = t_end - t_start
-        t_end = t_start + (span * 0.68)
-        
-    part_sound = full_sound.extract_part(
-        from_time=max(0.0, t_start - 0.03),
-        to_time=min(full_sound.get_total_duration(), t_end + 0.03),
-        preserve_times=False
-    )
-    return part_sound, t_start, t_end
-
-def compute_phonetic_metrics(sound, gender="남성"):
-    max_formant = 5000.0 if gender == "남성" else 5500.0
-    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_formant)
-    spectrogram = sound.to_spectrogram(window_length=0.005)
-    times = formants.ts
+    for seg in res.get("
