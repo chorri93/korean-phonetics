@@ -68,7 +68,7 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
         return sound, 0.0, total_len
     if is_three:
         diff = t_end - t_start
-        t_end = t_start + (diff * 0.68)
+        t_end = t_start + diff * 0.68
     p_start = max(0.0, t_start - 0.03)
     p_end = min(total_len, t_end + 0.03)
     part = sound.extract_part(from_time=p_start, to_time=p_end, preserve_times=False)
@@ -81,12 +81,4 @@ def compute_phonetic_metrics(sound, gender="남성"):
     times = formants.ts()
     f3_vals = [formants.get_value_at_time(3, t) for t in times]
     dur = float(sound.get_total_duration())
-    t1 = dur * 0.4
-    t2 = dur * 0.85
-    offset_f3 = [formants.get_value_at_time(3, t) for t in times if t1 <= t <= t2 and not np.isnan(formants.get_value_at_time(3, t))]
-    min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
-    return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
-
-def classify_pronunciation(d_t, d_c, s_info):
-    drop = d_c["min_off"] - d_t["min_off"]
-    ratio = d_t["duration"] / (
+    t1 = dur * 0
