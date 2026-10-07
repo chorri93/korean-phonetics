@@ -198,15 +198,17 @@ if app_mode == "학생 발음 실험 참여":
         with c2:
             st_gender = st.selectbox("성별", ["여성", "남성", "기타"])
         with c3:
-            st_age = st.number_input("나이(만)", 17, 80, 22)
+            # 최소 5세부터 90세까지 자유 입력 가능, step=1로 버튼 클릭 및 직접 타이핑 정상 작동
+            st_age = st.number_input("나이(만)", min_value=5, max_value=90, value=22, step=1)
         with c4:
             st_region = st.selectbox("유년기 성장 지역", [
                 "수도권(서울/경기/인천)", "경남(창원/마산/진주 등)", "부산", "대구", "경북",
                 "충청도", "전라도", "강원도", "제주도", "기타/해외"
             ])
 
+    # 필수 실험 세트 1과 2, 총 2개로만 한정하여 로드 (LIMIT 2)
     conn = sqlite3.connect(DB_PATH)
-    sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC", conn)
+    sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC LIMIT 2", conn)
     conn.close()
 
     total_sets = len(sets_df)
