@@ -555,4 +555,16 @@ elif app_mode == "교수/연구자 관리자 모드":
             pick_id = st.selectbox(
                 "확인할 데이터를 선택하세요:",
                 df_all['id'].tolist(),
-                format_func=lambda x: f"ID {x} | {
+                format_func=lambda x: f"ID {x} | {df_all.loc[df_all['id']==x, 'student_name'].values[0]} ({df_all.loc[df_all['id']==x, 'hometown'].values[0]}) - {df_all.loc[df_all['id']==x, 'classified_label'].values[0]}"
+            )
+            row_data = df_all[df_all['id'] == pick_id].iloc[0]
+
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                st.caption(f"표적 어절 ('{row_data['target_display']}') 음성:")
+                if os.path.exists(row_data['audio_path_target']):
+                    st.audio(row_data['audio_path_target'])
+            with col_p2:
+                st.caption(f"대조 어절 ('{row_data['control_display']}') 음성:")
+                if os.path.exists(row_data['audio_path_control']):
+                    st.audio(row_data['audio_path_control'])
