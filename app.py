@@ -26,7 +26,16 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS participant_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, student_name TEXT, gender TEXT, age INTEGER, hometown TEXT,
         set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, duration_target REAL, duration_control REAL,
-        closure_ratio REAL, classified_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
+        closure_ratio REAL, classified_label TEXT, perceived_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
+    
+    c.execute("PRAGMA table_info(participant_results)")
+    cols = [row[1] for row in c.fetchall()]
+    if "perceived_label" not in cols:
+        try:
+            c.execute("ALTER TABLE participant_results ADD COLUMN perceived_label TEXT")
+        except:
+            pass
+
     initial = [
         ("세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡", "낙", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
         ("세트 2: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟", "밥", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
@@ -81,19 +90,16 @@ def compute_phonetic_metrics(sound, gender="남성"):
     
     f3_vals = []
     for t in times:
-        val = formants.get_value_at_time(3, t)
-        f3_vals.append(val)
+        f3_vals.append(formants.get_value_at_time(3, t))
         
     dur = float(sound.get_total_duration())
-    t1 = dur * 0.4
-    t2 = dur * 0.85
-    
+    t1, t2 = dur * 0.4, dur * 0.85
     offset_f3 = []
     for t in times:
         if t1 <= t <= t2:
-            fv = formants.get_value_at_time(3, t)
-            if not np.isnan(fv):
-                offset_f3.append(fv)
+            val = formants.get_value_at_time(3, t)
+            if not np.isnan(val):
+                offset_f3.append(val)
                 
     min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
     return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
@@ -104,16 +110,16 @@ def classify_pronunciation(d_t, d_c, s_info):
     ratio = d_t["duration"] / denom
     if drop >= 70.0 and ratio >= 1.06:
         verdict = s_info["cand_hyper"]
-        desc = "모음 말단 F3 하강과 지속시간 연장이 확인되어 '이중조음형'으로 판정되었습니다."
+        desc = "모음 말단 F3 하강과 조음 제스처 중첩으로 인한 지속시간 연장이 함께 포착되어 '이중조음형'으로 판정되었습니다."
     elif drop >= 160.0 and ratio < 1.06:
         verdict = s_info["cand_alt"]
-        desc = "폐쇄음이 약화되고 유음 성분이 뚜렷하여 '[ㄹ] 선택형 단순화'로 판정되었습니다."
+        desc = "폐쇄음이 약화되고 유음 [ㄹ] 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
     elif drop >= 70.0 and ratio < 1.06:
         verdict = s_info["cand_hyper"]
-        desc = "모음 말단 F3 궤적에서 유음 잔여 효과가 포착되어 '이중조음형'으로 판정되었습니다."
+        desc = "모음 말단 F3 궤적에서 유음화 조음 잔여 효과가 포착되어 '이중조음형'으로 판정되었습니다."
     else:
         verdict = s_info["cand_std"]
-        desc = "대조군과 F3 궤적이 일치하여 단일 폐쇄음으로 단순화되었습니다."
+        desc = "대조군과 F3 궤적 및 지속시간이 일치하여 규범에 맞게 단일 폐쇄음으로 깔끔하게 단순화되었습니다."
     return verdict, drop, ratio, desc
 
 def plot_phonetics(snd_t, snd_c, pf_t, pf_c, w_t, w_c):
@@ -185,6 +191,17 @@ if app_mode == "학생 발음 실험 참여":
             if st.session_state[k_c]: st.audio(st.session_state[k_c], format="audio/wav")
 
         if st.session_state[k_t] and st.session_state[k_c]:
+            st.markdown("---")
+            # 문장 녹음 완료 후에만 명확히 질문 제시
+            t_disp = cur_set['target_display']
+            p1 = cur_set['cand_std'].split(" ")[0]
+            p2 = cur_set['cand_alt'].split(" ")[0]
+            p3 = cur_set['cand_hyper'].split(" ")[0]
+            perceived_options = [p1, p2, p3]
+
+            st.markdown(f"#### 🤔 방금 읽으신 '{t_disp}'를 어떻게 발음했다고 느끼셨나요?")
+            user_perceived = st.radio("본인이 실제로 소리 낸 발음을 하나 선택해 주세요:", perceived_options, key=f"perceive_{step_idx}", horizontal=True)
+
             if not st_name.strip():
                 st.error("⚠️ 상단 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key=f"btn_eval_{step_idx}", use_container_width=True):
@@ -202,11 +219,15 @@ if app_mode == "학생 발음 실험 참여":
 
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
-                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, duration_target, duration_control, closure_ratio, classified_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop, pf_t["duration"], pf_c["duration"], ratio, verdict, pt, pc))
+                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, duration_target, duration_control, closure_ratio, classified_label, perceived_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop, pf_t["duration"], pf_c["duration"], ratio, verdict, user_perceived, pt, pc))
                     conn.commit()
                     conn.close()
 
-                    st.session_state[f"eval_{step_idx}"] = {"verdict": verdict, "drop": drop, "ratio": ratio, "desc": desc, "snd_t": snd_t, "snd_c": snd_c, "pf_t": pf_t, "pf_c": pf_c, "set": cur_set}
+                    st.session_state[f"eval_{step_idx}"] = {
+                        "verdict": verdict, "drop": drop, "ratio": ratio, "desc": desc,
+                        "perceived": user_perceived, "snd_t": snd_t, "snd_c": snd_c,
+                        "pf_t": pf_t, "pf_c": pf_c, "set": cur_set
+                    }
 
         if f"eval_{step_idx}" in st.session_state:
             ev = st.session_state[f"eval_{step_idx}"]
@@ -217,14 +238,28 @@ if app_mode == "학생 발음 실험 참여":
             for i, (lab, val) in enumerate(cands):
                 with cols[i]:
                     if val == ev['verdict']:
-                        st.markdown(f"""<div style="border: 3px solid #FF4B4B; background: rgba(255,75,75,0.08); padding: 15px; border-radius: 10px; text-align: center;"><b style="color: #FF4B4B;">👉 피험자 발음 일치</b><div style="font-size: 24px; font-weight: 900; margin: 4px 0;">{val}</div><small style="color: #555;">({lab})</small></div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div style="border: 3px solid #FF4B4B; background: rgba(255,75,75,0.08); padding: 15px; border-radius: 10px; text-align: center;"><b style="color: #FF4B4B;">👉 음향 분석 판정형</b><div style="font-size: 24px; font-weight: 900; margin: 4px 0;">{val}</div><small style="color: #555;">({lab})</small></div>""", unsafe_allow_html=True)
                     else:
                         st.markdown(f"""<div style="border: 1px solid #DDD; background: #FAFAFA; padding: 15px; border-radius: 10px; text-align: center; opacity: 0.65;"><small style="color: #888;">후보군</small><div style="font-size: 17px; margin: 4px 0;">{val}</div><small style="color: #999;">({lab})</small></div>""", unsafe_allow_html=True)
+
+            is_match = (ev['perceived'] in ev['verdict'])
+            match_color = "#2E7D32" if is_match else "#D97706"
+            match_txt = "✅ 자각 발음과 실제 음향 산출이 일치합니다." if is_match else "⚡ 자각 발음과 실제 음향 산출 간 차이(불일치)가 확인되었습니다."
+
+            st.markdown(f"""
+            <div style="border-left: 5px solid {match_color}; background: #F9FAFB; padding: 14px 18px; border-radius: 6px; margin: 16px 0;">
+                <b style="color: {match_color}; font-size: 15px;">{match_txt}</b><br>
+                <span style="font-size: 14px; color: #444;">
+                    • <b>화자가 스스로 자각한 발음:</b> <span style="font-weight:700;">{ev['perceived']}</span><br>
+                    • <b>음향 측정 기반 실제 판정:</b> <span style="font-weight:700;">{ev['verdict']}</span>
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
 
             st.write(f"💡 **분석 해설:** {ev['desc']}")
             st.info(f"📘 **관련 음운 규칙:** {ev['set']['description']}")
             m1, m2, m3 = st.columns(3)
-            m1.metric("최종 판정형", ev['verdict'])
+            m1.metric("최종 음향 판정형", ev['verdict'])
             m2.metric("모음 말단 F3 하강치", f"{int(ev['drop'])} Hz")
             m3.metric("지속시간 비율", f"{ev['ratio']:.2f} 배")
             st.pyplot(plot_phonetics(ev['snd_t'], ev['snd_c'], ev['pf_t'], ev['pf_c'], ev['set']['target_display'], ev['set']['control_display']))
@@ -262,7 +297,7 @@ elif app_mode == "교수/연구자 관리자 모드":
             st.session_state.admin_logged_in = False
             st.rerun()
 
-        t1, t2 = st.tabs(["📊 전체 발음 통계 분석", "🎧 참여자 데이터 상세 분석 및 삭제"])
+        t1, t2 = st.tabs(["📊 전체 발음 통계 분석", "🎧 참가자별 통합 분석(세트1+세트2) 및 관리"])
         conn = sqlite3.connect(DB_PATH)
         df_all = pd.read_sql_query("SELECT * FROM participant_results ORDER BY id DESC", conn)
         conn.close()
@@ -271,101 +306,125 @@ elif app_mode == "교수/연구자 관리자 모드":
             if df_all.empty:
                 st.info("수집된 학생 데이터가 없습니다.")
             else:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("총 분석 발화 건수", f"{len(df_all)} 건")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("총 발화 건수", f"{len(df_all)} 건")
                 m2.metric("참여 학생 수", f"{df_all['student_name'].nunique()} 명")
                 std_r = (df_all['classified_label'].str.contains("표준")).mean() * 100
                 m3.metric("표준 규칙 실현율", f"{std_r:.1f} %")
-                st.bar_chart(df_all['classified_label'].value_counts())
-                st.dataframe(pd.crosstab(df_all['hometown'], df_all['classified_label'], margins=True), use_container_width=True)
+                
+                def check_agreement(row):
+                    p = str(row.get('perceived_label', ''))
+                    c = str(row.get('classified_label', ''))
+                    return (p in c) if p else False
+                agree_r = df_all.apply(check_agreement, axis=1).mean() * 100
+                m4.metric("자각-음향 일치율", f"{agree_r:.1f} %")
+
+                st.markdown("---")
+                c_ch1, c_ch2 = st.columns(2)
+                with c_ch1:
+                    st.write("▼ **실제 음향 변이형 빈도**")
+                    st.bar_chart(df_all['classified_label'].value_counts())
+                with c_ch2:
+                    st.write("▼ **출신 지역별 발음 변이 교차표**")
+                    st.dataframe(pd.crosstab(df_all['hometown'], df_all['classified_label'], margins=True), use_container_width=True)
 
         with t2:
             if df_all.empty:
                 st.info("수집된 데이터가 없습니다.")
             else:
                 st.download_button("💾 전체 CSV 다운로드", df_all.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), f"corpus_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
-                st.dataframe(df_all[['id', 'created_at', 'student_name', 'gender', 'age', 'hometown', 'set_name', 'classified_label', 'f3_drop', 'closure_ratio']], use_container_width=True)
-
+                
                 st.markdown("---")
-                st.subheader("🔍 개별 참여자 상세 음향 분석 및 음성 청취")
-                pid = st.selectbox("조회 대상 선택:", df_all['id'].tolist(), format_func=lambda x: f"ID {x} | {df_all.loc[df_all['id']==x, 'student_name'].values[0]} ({df_all.loc[df_all['id']==x, 'hometown'].values[0]}) - {df_all.loc[df_all['id']==x, 'set_name'].values[0]} ➔ {df_all.loc[df_all['id']==x, 'classified_label'].values[0]}")
-                r_sel = df_all[df_all['id'] == pid].iloc[0]
+                st.subheader("👤 참가자 1인 통합 상세 결과 열람")
+                
+                # 참가자 목록을 1인 단위로 그룹화
+                participants = df_all[['student_name', 'gender', 'age', 'hometown']].drop_duplicates()
+                part_list = []
+                for _, p_row in participants.iterrows():
+                    p_name = p_row['student_name']
+                    p_info = f"{p_name} ({p_row['gender']}, {p_row['age']}세, {p_row['hometown']})"
+                    part_list.append((p_name, p_info))
 
-                lbl = str(r_sel['classified_label'])
-                if "이중조음" in lbl:
-                    theme_col, bg_col = "#E05638", "rgba(224, 86, 56, 0.08)"
-                elif "표준" in lbl:
-                    theme_col, bg_col = "#2E7D32", "rgba(46, 125, 50, 0.08)"
-                else:
-                    theme_col, bg_col = "#1565C0", "rgba(21, 101, 192, 0.08)"
+                chosen_name = st.selectbox(
+                    "조회할 참가자를 선택하세요 (과제 1과 과제 2가 하나로 묶여 표시됩니다):",
+                    [p[0] for p in part_list],
+                    format_func=lambda x: [p[1] for p in part_list if p[0] == x][0]
+                )
+
+                # 선택한 참가자의 모든 과제 데이터 추출
+                user_records = df_all[df_all['student_name'] == chosen_name].sort_values(by="id", ascending=True)
+                first_r = user_records.iloc[0]
 
                 st.markdown(f"""
-                <div style="border-left: 6px solid {theme_col}; background: {bg_col}; padding: 16px 20px; border-radius: 8px; margin: 12px 0 16px 0;">
-                    <div style="font-size: 14px; color: #555; font-weight: 600;">실험 과제: {r_sel['set_name']}</div>
-                    <div style="display: flex; align-items: baseline; gap: 12px; margin-top: 6px;">
-                        <span style="font-size: 26px; font-weight: 900; color: {theme_col};">{lbl}</span>
-                        <span style="font-size: 15px; color: #333;">(참가자: <b>{r_sel['student_name']}</b> | {r_sel['gender']}, {r_sel['age']}세, {r_sel['hometown']})</span>
-                    </div>
+                <div style="border-left: 6px solid #1565C0; background: rgba(21,101,192,0.06); padding: 14px 20px; border-radius: 8px; margin: 10px 0 20px 0;">
+                    <span style="font-size: 20px; font-weight: 800; color: #1565C0;">👤 참가자: {chosen_name}</span>
+                    <span style="font-size: 15px; color: #555; margin-left: 12px;">(성별: {first_r['gender']} | 나이: {first_r['age']}세 | 지역: {first_r['hometown']})</span>
+                    <div style="font-size: 13px; color: #777; margin-top: 4px;">총 {len(user_records)}개의 음운 조사 과제를 완료했습니다.</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-                f_drop = float(r_sel['f3_drop'])
-                c_ratio = float(r_sel['closure_ratio'])
-                
-                sim_std = max(5, int(100 - min(90, abs(f_drop) * 0.45 + max(0, c_ratio - 1.0) * 120)))
-                sim_hyper = max(5, int(min(95, max(0, f_drop) * 0.55 + max(0, c_ratio - 1.0) * 80)))
-                sim_alt = max(5, int(min(95, max(0, f_drop) * 0.65 - max(0, c_ratio - 1.1) * 40)))
+                # 세트 1과 세트 2를 나란히 2개 컬럼으로 통합 표시
+                cols_task = st.columns(len(user_records))
+                for idx, (_, r_task) in enumerate(user_records.iterrows()):
+                    with cols_task[idx]:
+                        lbl = str(r_task['classified_label'])
+                        perc = str(r_task.get('perceived_label', '미응답'))
+                        is_eq = (perc in lbl)
+                        badge_color = "#2E7D32" if is_eq else "#D97706"
+                        badge_text = "일치" if is_eq else "불일치"
 
-                st.markdown("##### 🎯 발음형별 음향적 근접도(유사도)")
-                sc1, sc2, sc3 = st.columns(3)
-                sc1.progress(sim_std / 100, text=f"표준형 일치도: {sim_std}%")
-                sc2.progress(sim_hyper / 100, text=f"이중조음형 근접도: {sim_hyper}%")
-                sc3.progress(sim_alt / 100, text=f"비표준(단순화) 근접도: {sim_alt}%")
+                        st.markdown(f"#### 📌 {r_task['set_name'].split(':')[0]}")
+                        st.markdown(f"""
+                        <div style="border: 1px solid #E0E0E0; background: #FFFFFF; padding: 14px; border-radius: 8px; min-height: 160px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <div style="font-size: 13px; color: #888;">표적 어절: <b>'{r_task['target_display']}'</b></div>
+                            <div style="font-size: 18px; font-weight: 800; color: #111; margin: 4px 0;">{lbl}</div>
+                            <div style="font-size: 13px; color: #444; margin-top: 8px;">
+                                • 자각 발음: <b style="color: #000;">{perc}</b> 
+                                <span style="background: {badge_color}; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 4px;">{badge_text}</span><br>
+                                • F3 하강치: <b>{int(r_task['f3_drop'])} Hz</b><br>
+                                • 지속시간비: <b>{r_task['closure_ratio']:.2f}배</b>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                st.info(f"💡 **음향학적 근접 분석 해설:** F3 하강치가 **{int(f_drop)} Hz**, 조음 지속시간 비율이 **{c_ratio:.2f}배**로 측정되었습니다. " +
-                        (f"모음 말단에서 유음 [ㄹ] 성분의 F3 하강과 함께 폐쇄 구간 지연이 동시에 뚜렷하게 관찰되어, 대조군 대비 **이중조음형({sim_hyper}%)에 가장 강하게 근접**합니다." if "이중조음" in lbl else
-                         f"대조군 파형과 포먼트 궤적이 거의 일치하여, 겹받침이 잔여 성분 없이 **표준 단일 자음 단순화({sim_std}%)**에 가장 가깝게 실현되었습니다." if "표준" in lbl else
-                         f"폐쇄음의 조음 제스처가 약화되고 유음의 공명 성분이 두드러져 **비표준 단순화형({sim_alt}%)**에 가깝습니다."))
+                        # 음성 재생기
+                        st.caption(f"🎧 '{r_task['target_display']}' 발화 음성")
+                        if os.path.exists(r_task['audio_path_target']):
+                            st.audio(r_task['audio_path_target'])
+                        st.caption(f"🎧 '{r_task['control_display']}' 대조 음성")
+                        if os.path.exists(r_task['audio_path_control']):
+                            st.audio(r_task['audio_path_control'])
 
-                ca1, ca2 = st.columns(2)
-                with ca1:
-                    st.caption(f"🎧 표적 어절 ('{r_sel['target_display']}') 음성:")
-                    if os.path.exists(r_sel['audio_path_target']): st.audio(r_sel['audio_path_target'])
-                    else: st.caption("오디오 파일 없음")
-                with ca2:
-                    st.caption(f"🎧 대조 어절 ('{r_sel['control_display']}') 음성:")
-                    if os.path.exists(r_sel['audio_path_control']): st.audio(r_sel['audio_path_control'])
-                    else: st.caption("오디오 파일 없음")
-
-                if os.path.exists(r_sel['audio_path_target']) and os.path.exists(r_sel['audio_path_control']):
-                    with st.expander("📈 개별 스펙트로그램 및 파형 비교 그래프 열람", expanded=True):
-                        try:
-                            s_t = parselmouth.Sound(r_sel['audio_path_target'])
-                            s_c = parselmouth.Sound(r_sel['audio_path_control'])
-                            p_t = compute_phonetic_metrics(s_t, r_sel['gender'])
-                            p_c = compute_phonetic_metrics(s_c, r_sel['gender'])
-                            fig_adm = plot_phonetics(s_t, s_c, p_t, p_c, r_sel['target_display'], r_sel['control_display'])
-                            st.pyplot(fig_adm)
-                        except Exception as e:
-                            st.caption(f"그래프 렌더링 오류: {e}")
+                        # 스펙트로그램
+                        if os.path.exists(r_task['audio_path_target']) and os.path.exists(r_task['audio_path_control']):
+                            with st.expander(f"📈 '{r_task['target_display']}' 스펙트로그램 보기"):
+                                try:
+                                    s_t = parselmouth.Sound(r_task['audio_path_target'])
+                                    s_c = parselmouth.Sound(r_task['audio_path_control'])
+                                    p_t = compute_phonetic_metrics(s_t, r_task['gender'])
+                                    p_c = compute_phonetic_metrics(s_c, r_task['gender'])
+                                    fig_t = plot_phonetics(s_t, s_c, p_t, p_c, r_task['target_display'], r_task['control_display'])
+                                    st.pyplot(fig_t)
+                                except Exception as e:
+                                    st.caption(f"그래프 오류: {e}")
 
                 st.markdown("---")
-                st.subheader("🗑️ 데이터 선택 삭제 (다중 선택)")
-                opts = {r['id']: f"ID {r['id']} | {r['student_name']} ({r['hometown']}) - {r['classified_label']}" for _, r in df_all.iterrows()}
-                sel_ids = st.multiselect("삭제 대상 선택:", list(opts.keys()), format_func=lambda x: opts[x])
-                if sel_ids:
-                    chk = st.checkbox(f"선택한 {len(sel_ids)}건의 데이터 및 음성 파일을 영구 삭제합니다.")
-                    if st.button(f"🚨 선택된 {len(sel_ids)}건 삭제 실행", type="primary", disabled=not chk, use_container_width=True):
-                        for did in sel_ids:
-                            t_r = df_all[df_all['id'] == did]
-                            if not t_r.empty:
-                                r_v = t_r.iloc[0]
-                                if os.path.exists(r_v['audio_path_target']): os.remove(r_v['audio_path_target'])
-                                if os.path.exists(r_v['audio_path_control']): os.remove(r_v['audio_path_control'])
-                        conn = sqlite3.connect(DB_PATH)
-                        phs = ",".join(["?"] * len(sel_ids))
-                        conn.cursor().execute(f"DELETE FROM participant_results WHERE id IN ({phs})", sel_ids)
-                        conn.commit()
-                        conn.close()
-                        st.success("삭제 완료!")
-                        st.rerun()
+                st.subheader(f"🗑️ '{chosen_name}' 참가자 데이터 영구 삭제")
+                st.write(f"선택한 참가자 **{chosen_name}**의 세트 1과 세트 2에 대한 모든 레코드({len(user_records)}건) 및 녹음 음성 파일이 일괄 영구 삭제됩니다.")
+                del_chk = st.checkbox(f"'{chosen_name}' 학생의 모든 데이터를 삭제하는 것에 동의합니다.", key=f"chk_del_{chosen_name}")
+                if st.button(f"🚨 '{chosen_name}' 학생 데이터 전체 일괄 삭제", type="primary", disabled=not del_chk, use_container_width=True):
+                    for _, d_row in user_records.iterrows():
+                        if os.path.exists(d_row['audio_path_target']):
+                            try: os.remove(d_row['audio_path_target'])
+                            except: pass
+                        if os.path.exists(d_row['audio_path_control']):
+                            try: os.remove(d_row['audio_path_control'])
+                            except: pass
+                    
+                    conn = sqlite3.connect(DB_PATH)
+                    c = conn.cursor()
+                    c.execute("DELETE FROM participant_results WHERE student_name = ?", (chosen_name,))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"'{chosen_name}' 학생의 모든 데이터가 성공적으로 삭제되었습니다.")
+                    st.rerun()
