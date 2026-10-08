@@ -31,7 +31,7 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS participant_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, student_name TEXT, gender TEXT, age INTEGER, hometown TEXT,
         set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, f3_drop_pct REAL, duration_target REAL, duration_control REAL,
-        closure_ratio REAL, classified_label TEXT, perceived_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
+        closure_ratio REAL, classified_label TEXT, perceived_label TEXT, expert_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
         
     c.execute("""CREATE TABLE IF NOT EXISTS system_thresholds (
         id INTEGER PRIMARY KEY,
@@ -48,6 +48,9 @@ def init_db():
         except: pass
     if "f3_drop_pct" not in cols:
         try: c.execute("ALTER TABLE participant_results ADD COLUMN f3_drop_pct REAL")
+        except: pass
+    if "expert_label" not in cols:
+        try: c.execute("ALTER TABLE participant_results ADD COLUMN expert_label TEXT")
         except: pass
 
     initial = [
@@ -73,7 +76,7 @@ def get_current_thresholds():
 
 def auto_calibrate_thresholds():
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT set_name, f3_drop_pct, closure_ratio, perceived_label FROM participant_results WHERE perceived_label IS NOT NULL AND f3_drop_pct IS NOT NULL", conn)
+    df = pd.read_sql_query("SELECT set_name, f3_drop_pct, closure_ratio, perceived_label, expert_label FROM participant_results WHERE f3_drop_pct IS NOT NULL", conn)
     conn.close()
     
     if len(df) < 4:
@@ -89,21 +92,27 @@ def auto_calibrate_thresholds():
     for tf in cand_f3:
         for tr in cand_ratio:
             matches = 0
+            valid_cnt = 0
             for _, r in df.iterrows():
+                target_ans = r['expert_label'] if pd.notnull(r['expert_label']) and r['expert_label'] != "" else r['perceived_label']
+                if pd.isnull(target_ans) or target_ans == "":
+                    continue
+                valid_cnt += 1
                 is_set2 = ("밟" in str(r['set_name']))
                 if is_set2:
-                    is_hyper = (r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 0.7)
+                    is_hyper = (r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 0.4)
                 else:
                     is_hyper = (r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 1.5)
                     
-                is_hyper_perc = ("낡" in r['perceived_label'] or "밟" in r['perceived_label'])
-                if is_hyper == is_hyper_perc:
+                is_hyper_ans = ("낡" in str(target_ans) or "밟" in str(target_ans))
+                if is_hyper == is_hyper_ans:
                     matches += 1
-            acc = matches / len(df)
-            if acc > best_acc:
-                best_acc = acc
-                best_th_f3 = tf
-                best_th_ratio = tr
+            if valid_cnt > 0:
+                acc = matches / valid_cnt
+                if acc > best_acc:
+                    best_acc = acc
+                    best_th_f3 = tf
+                    best_th_ratio = tr
                 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -183,6 +192,8 @@ def compute_phonetic_metrics(sound, gender="남성"):
         f3_vals.append(formants.get_value_at_time(3, t))
         
     dur = float(sound.get_total_duration())
+    
+    # 1. 모음 말단(45% ~ 82%) 최저점
     t1, t2 = dur * 0.45, dur * 0.82
     offset_f3 = []
     for t in times:
@@ -190,11 +201,20 @@ def compute_phonetic_metrics(sound, gender="남성"):
             val = formants.get_value_at_time(3, t)
             if not np.isnan(val):
                 offset_f3.append(val)
-                
     min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
-    return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
 
-# 음운 환경(연구개음 ㄺ vs 양순음 ㄼ)에 따른 분기 판정
+    # 2. 'ㄼ' 감지 핵심: 양순 폐쇄 직전 모음 중후반부(50% ~ 72%)의 평균 F3 레벨
+    m1, m2 = dur * 0.50, dur * 0.72
+    mid_f3 = []
+    for t in times:
+        if m1 <= t <= m2:
+            val = formants.get_value_at_time(3, t)
+            if not np.isnan(val):
+                mid_f3.append(val)
+    avg_mid_f3 = float(np.mean(mid_f3)) if len(mid_f3) > 0 else min_off
+
+    return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "avg_mid_f3": avg_mid_f3, "duration": dur}
+
 def classify_pronunciation_adaptive(d_t, d_c, s_info):
     th_f3_rel, th_ratio = get_current_thresholds()
     
@@ -208,18 +228,25 @@ def classify_pronunciation_adaptive(d_t, d_c, s_info):
     is_bilabial_set = ("밟" in s_info["target_keyword"])
 
     if is_bilabial_set:
-        # 세트 2 ('밟도록'): 양순 폐쇄음의 F3 하강 특성을 감안하여 조음 시간 지연(중첩)과 미세 F3 하강을 종합 평가
-        if ratio >= th_ratio or drop_pct >= (th_f3_rel * 0.6):
+        # 양순음 전용 다차원 감지:
+        # (1) 모음 50~72% 중후반부 F3 레벨 차이 (양순 폐쇄 이전 [ㄹ] 조음 제스처)
+        mid_drop_hz = d_c["avg_mid_f3"] - d_t["avg_mid_f3"]
+        mid_drop_pct = (mid_drop_hz / max(100.0, d_c["avg_mid_f3"])) * 100.0
+        
+        # 종합 점수화: 지속시간 증가 또는 중후반 F3 침하 포착
+        is_hyper = (ratio >= 1.01) or (mid_drop_pct >= 0.8) or (drop_pct >= 1.0)
+        
+        if is_hyper:
             verdict = s_info["cand_hyper"]
-            desc = f"양순 폐쇄음([ㅂ]) 이전 유음 [ㄹ] 조음 제스처의 잔류로 인해 조음 구간 지속시간 비율이 {ratio:.2f}배(기준: {th_ratio:.2f}배)로 연장되어 '이중조음형([밟또록])'으로 판정되었습니다."
-        elif drop_pct >= (th_f3_rel * 2.0) and ratio < 0.98:
+            desc = f"양순 폐쇄 직전 모음 중후반 구간에서 유음 [ㄹ] 성분의 F3 침하({mid_drop_pct:.1f}%) 및 조음 지속시간({ratio:.2f}배)이 감지되어 '이중조음형([밟또록])'으로 판정되었습니다."
+        elif drop_pct >= 6.0 and ratio < 0.98:
             verdict = s_info["cand_alt"]
-            desc = "폐쇄음이 탈락하고 유음 성분이 지배적으로 실현되어 '[ㄹ] 선택형 단순화([발또록])'로 판정되었습니다."
+            desc = "폐쇄음이 완전히 약화되고 유음 성분이 지배적으로 실현되어 '[ㄹ] 선택형 단순화([발또록])'로 판정되었습니다."
         else:
             verdict = s_info["cand_std"]
             desc = f"대조군('밥도둑')과 조음 지속시간 및 포먼트 궤적이 일치하여 단일 양순 폐쇄음 규범 단순화([밥또록])로 판정되었습니다."
     else:
-        # 세트 1 ('낡지'): 연구개 폐쇄음 환경이므로 F3 상대 하강율 중심 평가
+        # 연구개음 '낡지' 판정
         if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.5):
             verdict = s_info["cand_hyper"]
             desc = f"모음 말단 F3 상대 하강율이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 제스처가 잔류하여 '이중조음형([낡찌])'으로 판정되었습니다."
@@ -321,7 +348,7 @@ if app_mode == "학생 발음 실험 참여":
             if not st_name.strip():
                 st.error("⚠️ 상단 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key=f"btn_eval_{step_idx}", use_container_width=True):
-                with st.spinner("표적 어절 추출 및 음운 환경별 음향 지표 산출 중..."):
+                with st.spinner("표적 어절 정밀 추출 및 음향 지표 산출 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     pt = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['target_display']}_{stamp}.wav")
                     pc = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['control_display']}_{stamp}.wav")
@@ -336,7 +363,7 @@ if app_mode == "학생 발음 실험 참여":
 
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
-                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, f3_drop_pct, duration_target, duration_control, closure_ratio, classified_label, perceived_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop_hz, drop_pct, pf_t["duration"], pf_c["duration"], ratio, verdict, user_perceived, pt, pc))
+                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, f3_drop_pct, duration_target, duration_control, closure_ratio, classified_label, perceived_label, expert_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop_hz, drop_pct, pf_t["duration"], pf_c["duration"], ratio, verdict, user_perceived, None, pt, pc))
                     conn.commit()
                     conn.close()
 
@@ -416,7 +443,7 @@ elif app_mode == "교수/연구자 관리자 모드":
             st.session_state.admin_logged_in = False
             st.rerun()
 
-        t1, t2 = st.tabs(["📊 전체 발음 통계 분석", "🎧 참가자별 통합 분석(세트1+세트2) 및 관리"])
+        t1, t2 = st.tabs(["📊 전체 발음 통계 분석", "🎧 참가자별 통합 분석 & 연구자 청취 판정"])
         conn = sqlite3.connect(DB_PATH)
         df_all = pd.read_sql_query("SELECT * FROM participant_results ORDER BY id DESC", conn)
         conn.close()
@@ -432,32 +459,31 @@ elif app_mode == "교수/연구자 관리자 모드":
                 m1.metric("총 발화 건수", f"{len(df_all)} 건")
                 m2.metric("참여 학생 수", f"{df_all['student_name'].nunique()} 명")
                 std_r = (df_all['classified_label'].str.contains("표준")).mean() * 100
-                m3.metric("표준 규칙 실현율", f"{std_r:.1f} %")
+                m3.metric("기계 판정 표준율", f"{std_r:.1f} %")
                 
-                def check_agreement(row):
-                    p = str(row.get('perceived_label', ''))
-                    c = str(row.get('classified_label', ''))
-                    return (p in c) if p else False
-                agree_r = df_all.apply(check_agreement, axis=1).mean() * 100
-                m4.metric("자각-음향 일치율", f"{agree_r:.1f} %")
+                exp_done = df_all['expert_label'].notnull().sum()
+                m4.metric("연구자 청취 판정 완료", f"{exp_done} / {len(df_all)} 건")
 
                 st.markdown("---")
                 c_ch1, c_ch2 = st.columns(2)
                 with c_ch1:
-                    st.write("▼ **실제 음향 변이형 빈도**")
+                    st.write("▼ **기계 판정형 빈도**")
                     st.bar_chart(df_all['classified_label'].value_counts())
                 with c_ch2:
-                    st.write("▼ **출신 지역별 발음 변이 교차표**")
-                    st.dataframe(pd.crosstab(df_all['hometown'], df_all['classified_label'], margins=True), use_container_width=True)
+                    st.write("▼ **연구자 최종 판정형 빈도**")
+                    if exp_done > 0:
+                        st.bar_chart(df_all['expert_label'].value_counts())
+                    else:
+                        st.caption("아직 연구자 청취 판정이 등록되지 않았습니다.")
 
         with t2:
             if df_all.empty:
                 st.info("수집된 데이터가 없습니다.")
             else:
-                st.download_button("💾 전체 CSV 다운로드", df_all.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), f"corpus_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+                st.download_button("💾 전체 코퍼스 CSV 다운로드 (연구자 판정 포함)", df_all.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), f"corpus_expert_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
                 
                 st.markdown("---")
-                st.subheader("👤 참가자 1인 통합 상세 결과 열람")
+                st.subheader("👤 참가자 1인 통합 상세 결과 열람 및 연구자 청취 판정")
                 
                 participants = df_all[['student_name', 'gender', 'age', 'hometown']].drop_duplicates()
                 part_list = []
@@ -488,32 +514,70 @@ elif app_mode == "교수/연구자 관리자 모드":
                     with cols_task[idx]:
                         lbl = str(r_task['classified_label'])
                         perc = str(r_task.get('perceived_label', '미응답'))
+                        exp_lbl = str(r_task.get('expert_label', ''))
+                        has_exp = pd.notnull(r_task['expert_label']) and exp_lbl != "" and exp_lbl != "None"
+
                         is_eq = (perc in lbl)
                         badge_color = "#2E7D32" if is_eq else "#D97706"
                         badge_text = "일치" if is_eq else "불일치"
                         pct_val = r_task['f3_drop_pct'] if pd.notnull(r_task['f3_drop_pct']) else 0.0
 
                         st.markdown(f"#### 📌 {r_task['set_name'].split(':')[0]}")
+                        
+                        exp_badge_html = f"<div style='margin-top:6px; background:#E8EAF6; padding:4px 8px; border-radius:4px; font-size:13px; color:#1A237E;'><b>👑 연구자 확정:</b> <span style='font-size:15px; font-weight:800; color:#0D47A1;'>{exp_lbl}</span></div>" if has_exp else "<div style='margin-top:6px; color:#888; font-size:12px;'>※ 아직 연구자 판정이 등록되지 않았습니다.</div>"
+
                         st.markdown(f"""
-                        <div style="border: 1px solid #E0E0E0; background: #FFFFFF; padding: 14px; border-radius: 8px; min-height: 160px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <div style="border: 1px solid #E0E0E0; background: #FFFFFF; padding: 14px; border-radius: 8px; min-height: 200px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                             <div style="font-size: 13px; color: #888;">표적 어절: <b>'{r_task['target_display']}'</b></div>
-                            <div style="font-size: 18px; font-weight: 800; color: #111; margin: 4px 0;">{lbl}</div>
-                            <div style="font-size: 13px; color: #444; margin-top: 8px;">
+                            <div style="font-size: 18px; font-weight: 800; color: #111; margin: 4px 0;">기계 판정: {lbl}</div>
+                            <div style="font-size: 13px; color: #444; margin-top: 6px;">
                                 • 자각 발음: <b style="color: #000;">{perc}</b> 
                                 <span style="background: {badge_color}; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 4px;">{badge_text}</span><br>
                                 • 상대 F3 하강율: <b>{pct_val:.1f}%</b> ({int(r_task['f3_drop'])} Hz)<br>
                                 • 지속시간비: <b>{r_task['closure_ratio']:.2f}배</b>
                             </div>
+                            {exp_badge_html}
                         </div>
                         """, unsafe_allow_html=True)
 
-                        st.caption(f"🎧 '{r_task['target_display']}' 발화 음성")
+                        # 음성 재생
+                        st.caption(f"🎧 '{r_task['target_display']}' 발화 음성 청취:")
                         if os.path.exists(r_task['audio_path_target']):
                             st.audio(r_task['audio_path_target'])
-                        st.caption(f"🎧 '{r_task['control_display']}' 대조 음성")
+                        st.caption(f"🎧 '{r_task['control_display']}' 대조 음성 청취:")
                         if os.path.exists(r_task['audio_path_control']):
                             st.audio(r_task['audio_path_control'])
 
+                        # 연구자 판독 UI
+                        st.markdown("**✏️ 연구자 청취 최종 판정 (Ground Truth)**")
+                        is_bilab = ("밟" in str(r_task['set_name']))
+                        expert_options = ["[밥또록] (표준: ㅂ단순화)", "[발또록] (비표준: ㄹ단순화)", "[밟또록] (이중조음/과도교정)"] if is_bilab else ["[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (이중조음/과도교정)"]
+                        
+                        default_idx = 0
+                        if has_exp:
+                            for e_i, e_opt in enumerate(expert_options):
+                                if exp_lbl.split(" ")[0] in e_opt:
+                                    default_idx = e_i
+                                    break
+                                    
+                        chosen_expert = st.selectbox(
+                            f"판정 선택 (ID {r_task['id']})",
+                            expert_options,
+                            index=default_idx,
+                            key=f"sel_exp_{r_task['id']}"
+                        )
+                        
+                        if st.button("💾 판정 확정 및 저장", key=f"btn_save_exp_{r_task['id']}", use_container_width=True):
+                            conn = sqlite3.connect(DB_PATH)
+                            c = conn.cursor()
+                            c.execute("UPDATE participant_results SET expert_label = ? WHERE id = ?", (chosen_expert, r_task['id']))
+                            conn.commit()
+                            conn.close()
+                            auto_calibrate_thresholds()
+                            st.success("연구자 판정 저장 완료!")
+                            st.rerun()
+
+                        # 스펙트로그램
                         if os.path.exists(r_task['audio_path_target']) and os.path.exists(r_task['audio_path_control']):
                             with st.expander(f"📈 '{r_task['target_display']}' 스펙트로그램 보기"):
                                 try:
