@@ -102,7 +102,7 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
     convert_and_save_audio(audio_bytes, save_path)
     res = get_whisper().transcribe(save_path, word_timestamps=True, language="ko")
     sound = parselmouth.Sound(save_path)
-    total_d = sound.get_total_duration()
+    total_d = float(sound.get_total_duration())
 
     t_start, t_end = None, None
     ckw = keyword.replace(" ", "").strip()
@@ -110,30 +110,3 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
 
     for seg in res.get("segments", []):
         for w in seg.get("words", []):
-            wt = w["word"].replace(" ", "").strip()
-            if (ckw in wt) or (skw in wt):
-                t_start = float(w["start"])
-                t_end = float(w["end"])
-                break
-        if t_start is not None: break
-
-    valid = (t_start is not None and t_end is not None and 0.18 <= (t_end - t_start) <= 0.95)
-    if not valid:
-        if "낡" in keyword: t_start, t_end = total_d * 0.35, total_d * 0.35 + 0.42
-        elif "낙" in keyword: t_start, t_end = total_d * 0.08, total_d * 0.08 + 0.42
-        elif "밟도" in keyword: t_start, t_end = total_d * 0.32, total_d * 0.32 + 0.45
-        elif "밟지" in keyword: t_start, t_end = total_d * 0.38, total_d * 0.38 + 0.42
-        elif "밥지" in keyword: t_start, t_end = total_d * 0.42, total_d * 0.42 + 0.42
-        else: t_start, t_end = total_d * 0.30, total_d * 0.30 + 0.45
-
-    if is_three:
-        t_end = t_start + (t_end - t_start) * 0.68
-
-    p_s = max(0.0, t_start - 0.02)
-    p_e = min(total_d, t_end + 0.02)
-    part = sound.extract_part(from_time=p_s, to_time=p_e, preserve_times=False)
-    return part, p_s, p_e
-
-def compute_phonetic_metrics(sound, gender="남성"):
-    max_f = 5000.0 if gender == "남성" else 5500.0
-    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_f
