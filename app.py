@@ -95,10 +95,10 @@ def plot_spec(m_t, m_c, w_t, w_c):
     for idx, (m, w) in enumerate([(m_t, w_t), (m_c, w_c)]):
         axes[0, idx].pcolormesh(m["sg"].x_grid(), m["sg"].y_grid(), 10 * np.log10(m["sg"].values), cmap="viridis", shading="auto")
         axes[0, idx].plot(m["ts"], m["f3"], color="red", linewidth=2.5, label="F3")
-        axes[0, idx].set_title(f"'{w}' Spectrogram", fontweight='bold')
+        axes[0, idx].set_title(str(w) + " Spectrogram", fontweight='bold')
         axes[0, idx].set_ylim(0, 4500)
         axes[1, idx].plot(m["snd"].xs(), m["snd"].values.T, color="#005588" if idx else "#222")
-        axes[1, idx].set_title(f"'{w}' Waveform ({m['dur']:.2f}s)")
+        axes[1, idx].set_title(str(w) + " Waveform (" + str(round(m['dur'], 2)) + "s)")
     plt.tight_layout()
     return fig
 
@@ -122,52 +122,52 @@ if mode == "학생 발음 실험 참여":
 
     if step < len(SETS):
         task = SETS[step]
-        st.progress(step / len(SETS), text=f"과제 {step + 1} / {len(SETS)}")
+        st.progress(step / len(SETS), text="과제 " + str(step + 1) + " / " + str(len(SETS)))
         st.subheader(task["title"])
 
-        kt, kc = f"aud_t_{task['id']}", f"aud_c_{task['id']}"
+        kt, kc = "aud_t_" + str(task['id']), "aud_c_" + str(task['id'])
         if kt not in st.session_state: st.session_state[kt] = None
         if kc not in st.session_state: st.session_state[kc] = None
 
         col_t, col_c = st.columns(2)
         with col_t:
-            st.warning(f"🗣️ **문장 1: {task['s_t']}**")
+            st.warning("🗣️ **문장 1: " + task['s_t'] + "**")
             if st.session_state[kt] is None:
-                rt = mic_recorder(start_prompt="🔴 문장 1 녹음", stop_prompt="⏹️ 완료", key=f"rt_{task['id']}_{step}")
+                rt = mic_recorder(start_prompt="🔴 문장 1 녹음", stop_prompt="⏹️ 완료", key="rt_" + str(task['id']) + "_" + str(step))
                 if rt and rt.get("bytes"):
                     st.session_state[kt] = rt["bytes"]
                     st.rerun()
             else:
                 st.audio(st.session_state[kt], format="audio/wav")
-                if st.button("🔄 문장 1 다시 녹음", key=f"re_t_{task['id']}"):
+                if st.button("🔄 문장 1 다시 녹음", key="re_t_" + str(task['id'])):
                     st.session_state[kt] = None
                     st.rerun()
 
         with col_c:
-            st.info(f"🗣️ **문장 2: {task['s_c']}**")
+            st.info("🗣️ **문장 2: " + task['s_c'] + "**")
             if st.session_state[kc] is None:
-                rc = mic_recorder(start_prompt="🔴 문장 2 녹음", stop_prompt="⏹️ 완료", key=f"rc_{task['id']}_{step}")
+                rc = mic_recorder(start_prompt="🔴 문장 2 녹음", stop_prompt="⏹️ 완료", key="rc_" + str(task['id']) + "_" + str(step))
                 if rc and rc.get("bytes"):
                     st.session_state[kc] = rc["bytes"]
                     st.rerun()
             else:
                 st.audio(st.session_state[kc], format="audio/wav")
-                if st.button("🔄 문장 2 다시 녹음", key=f"re_c_{task['id']}"):
+                if st.button("🔄 문장 2 다시 녹음", key="re_c_" + str(task['id'])):
                     st.session_state[kc] = None
                     st.rerun()
 
         if st.session_state[kt] and st.session_state[kc]:
             st.markdown("---")
             opts = [c.split(" ")[0] for c in task["cand"]]
-            u_perc = st.radio(f"🤔 방금 읽으신 '{task['disp_t']}'를 어떻게 발음했다고 느끼셨나요?", opts, key=f"p_{step}", horizontal=True)
+            u_perc = st.radio("🤔 방금 읽으신 '" + task['disp_t'] + "'를 어떻게 발음했다고 느끼셨나요?", opts, key="p_" + str(step), horizontal=True)
 
             if not name.strip():
                 st.error("⚠️ 1단계에서 이름을 입력해 주세요.")
-            elif st.button("🚀 녹음 완료 및 음향 분석 실행", key=f"run_{step}", type="primary", use_container_width=True):
+            elif st.button("🚀 녹음 완료 및 음향 분석 실행", key="run_" + str(step), type="primary", use_container_width=True):
                 with st.spinner("스펙트로그램 분석 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    pt = os.path.join(AUDIO_DIR, f"{name}_{task['disp_t']}_{stamp}.wav")
-                    pc = os.path.join(AUDIO_DIR, f"{name}_{task['disp_c']}_{stamp}.wav")
+                    pt = os.path.join(AUDIO_DIR, name + "_" + task['disp_t'] + "_" + stamp + ".wav")
+                    pc = os.path.join(AUDIO_DIR, name + "_" + task['disp_c'] + "_" + stamp + ".wav")
 
                     s_t = slice_word(st.session_state[kt], task["kw_t"], pt, (task["id"] == 3))
                     s_c = slice_word(st.session_state[kc], task["kw_c"], pc, (task["id"] == 3))
@@ -181,10 +181,10 @@ if mode == "학생 발음 실험 참여":
                     conn.commit()
                     conn.close()
 
-                    st.session_state[f"res_{step}"] = {"verdict": verdict, "drop_pct": drop_pct, "ratio": ratio, "exp": exp, "perc": u_perc, "m_t": m_t, "m_c": m_c, "task": task}
+                    st.session_state["res_" + str(step)] = {"verdict": verdict, "drop_pct": drop_pct, "ratio": ratio, "exp": exp, "perc": u_perc, "m_t": m_t, "m_c": m_c, "task": task}
 
-        if f"res_{step}" in st.session_state:
-            r = st.session_state[f"res_{step}"]
+        if ("res_" + str(step)) in st.session_state:
+            r = st.session_state["res_" + str(step)]
             st.markdown("---")
             st.subheader("🎯 스펙트로그램 음향 분석 결과")
             cols = st.columns(3)
@@ -192,16 +192,16 @@ if mode == "학생 발음 실험 참여":
             for i, cand in enumerate(r["task"]["cand"]):
                 with cols[i]:
                     if cand == r["verdict"]:
-                        st.markdown(f"<div style='border: 3px solid #FF4B4B; background: rgba(255,75,75,0.08); padding: 12px; border-radius: 8px; text-align: center;'><b style='color:#FF4B4B;'>👉 음향 분석 판정형</b><div style='font-size:22px; font-weight:900;'>{cand}</div><small>({labs[i]})</small></div>", unsafe_allow_html=True)
+                        st.markdown("<div style='border: 3px solid #FF4B4B; background: rgba(255,75,75,0.08); padding: 12px; border-radius: 8px; text-align: center;'><b style='color:#FF4B4B;'>👉 음향 분석 판정형</b><div style='font-size:22px; font-weight:900;'>" + str(cand) + "</div><small>(" + labs[i] + ")</small></div>", unsafe_allow_html=True)
                     else:
-                        st.markdown(f"<div style='border: 1px solid #DDD; background: #FAFAFA; padding: 12px; border-radius: 8px; text-align: center; opacity: 0.65;'><small>후보</small><div style='font-size:16px;'>{cand}</div><small>({labs[i]})</small></div>", unsafe_allow_html=True)
+                        st.markdown("<div style='border: 1px solid #DDD; background: #FAFAFA; padding: 12px; border-radius: 8px; text-align: center; opacity: 0.65;'><small>후보</small><div style='font-size:16px;'>" + str(cand) + "</div><small>(" + labs[i] + ")</small></div>", unsafe_allow_html=True)
 
             is_eq = (r["perc"] in r["verdict"])
             b_col = "#2E7D32" if is_eq else "#D97706"
             b_txt = "✅ 자각 발음과 스펙트로그램 음향 판정이 일치합니다." if is_eq else "⚡ 자각 발음과 스펙트로그램 음향 판정 간 차이가 확인되었습니다."
-            st.markdown(f"<div style='border-left: 5px solid {b_col}; background: #F9FAFB; padding: 12px; border-radius: 6px; margin: 12px 0;'><b>{b_txt}</b><br><small>• 자각: <b>{r['perc']}</b> | • 음향 판정: <b>{r['verdict']}</b></small></div>", unsafe_allow_html=True)
-            st.write(f"💡 **분석 해설:** {r['exp']}")
-            st.info(f"📘 **관련 규정:** {r['task']['rule']}")
+            st.markdown("<div style='border-left: 5px solid " + b_col + "; background: #F9FAFB; padding: 12px; border-radius: 6px; margin: 12px 0;'><b>" + b_txt + "</b><br><small>• 자각: <b>" + str(r['perc']) + "</b> | • 음향 판정: <b>" + str(r['verdict']) + "</b></small></div>", unsafe_allow_html=True)
+            st.write("💡 **분석 해설:** " + r['exp'])
+            st.info("📘 **관련 규정:** " + r['task']['rule'])
             st.pyplot(plot_spec(r["m_t"], r["m_c"], r["task"]["disp_t"], r["task"]["disp_c"]))
 
             if st.button("다음 과제로 넘어가기 ➡️" if step + 1 < len(SETS) else "모든 실습 완료 🏁", type="primary", use_container_width=True):
@@ -238,10 +238,10 @@ elif mode == "교수/연구자 관리자 모드":
                 st.info("수집된 데이터가 없습니다.")
             else:
                 m1, m2, m3 = st.columns(3)
-                m1.metric("총 발화 수", f"{len(df)} 건")
-                m2.metric("참여자 수", f"{df['name'].nunique()} 명")
+                m1.metric("총 발화 수", str(len(df)) + " 건")
+                m2.metric("참여자 수", str(df['name'].nunique()) + " 명")
                 ed = df['expert'].notnull().sum()
-                m3.metric("연구자 판정 완료", f"{ed} / {len(df)} 건")
+                m3.metric("연구자 판정 완료", str(ed) + " / " + str(len(df)) + " 건")
 
                 st.write("▼ **학생 자각 발음 분포**")
                 st.bar_chart(df['perceived'].value_counts())
@@ -261,4 +261,30 @@ elif mode == "교수/연구자 관리자 모드":
                 cols = st.columns(len(u_df))
                 for i, (_, row) in enumerate(u_df.iterrows()):
                     with cols[i]:
-                        st.markdown(f"#### 📌 과제 {
+                        st.markdown("#### 📌 과제 " + str(row['task_id']))
+                        st.write("• 기계 판정: **" + str(row['classified']) + "**\n• 학생 자각: **" + str(row['perceived']) + "**")
+                        if row['expert'] and row['expert'] != "None":
+                            st.success("👑 연구자 확정: " + str(row['expert']))
+
+                        if os.path.exists(row['path_t']):
+                            st.caption("표적 발화 음성:")
+                            st.audio(row['path_t'])
+
+                        cand_opts = SETS[int(row['task_id']) - 1]["cand"]
+                        def_i = 0
+                        for idx_c, c_text in enumerate(cand_opts):
+                            if row['expert'] and row['expert'].split(" ")[0] in c_text:
+                                def_i = idx_c
+                                break
+
+                        chosen_e = st.selectbox("판독 (ID " + str(row['id']) + ")", cand_opts, index=def_i, key="sel_" + str(row['id']))
+                        if st.button("💾 연구자 판독 저장", key="btn_" + str(row['id'])):
+                            conn = sqlite3.connect(DB_PATH)
+                            conn.cursor().execute("UPDATE results SET expert = ? WHERE id = ?", (chosen_e, row['id']))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+
+                st.markdown("---")
+                if st.button("🚨 '" + str(c_name) + "' 참가자 데이터 삭제", type="primary"):
+                    conn = sqlite3.connect(DB_PATH)
