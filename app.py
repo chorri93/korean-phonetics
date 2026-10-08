@@ -4,14 +4,13 @@ import parselmouth
 import whisper
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 import sqlite3
 import pandas as pd
 import os
 import subprocess
 from datetime import datetime
 
-# Matplotlib 한글 폰트 설정 (리눅스 깨짐 방지)
+# Matplotlib 기본 설정
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'NanumGothic', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -74,7 +73,7 @@ def get_current_thresholds():
 
 def auto_calibrate_thresholds():
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT f3_drop_pct, closure_ratio, perceived_label FROM participant_results WHERE perceived_label IS NOT NULL AND f3_drop_pct IS NOT NULL", conn)
+    df = pd.read_sql_query("SELECT set_name, f3_drop_pct, closure_ratio, perceived_label FROM participant_results WHERE perceived_label IS NOT NULL AND f3_drop_pct IS NOT NULL", conn)
     conn.close()
     
     if len(df) < 4:
@@ -84,16 +83,21 @@ def auto_calibrate_thresholds():
     best_th_f3 = 1.8
     best_th_ratio = 1.02
     
-    cand_f3 = [0.8, 1.2, 1.5, 1.8, 2.2, 2.8, 3.5]
-    cand_ratio = [0.98, 1.01, 1.03, 1.05, 1.08]
+    cand_f3 = [0.8, 1.2, 1.5, 1.8, 2.2, 2.8]
+    cand_ratio = [0.98, 1.01, 1.03, 1.05]
     
     for tf in cand_f3:
         for tr in cand_ratio:
             matches = 0
             for _, r in df.iterrows():
-                is_hyper_acoustic = (r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 1.5)
+                is_set2 = ("밟" in str(r['set_name']))
+                if is_set2:
+                    is_hyper = (r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 0.7)
+                else:
+                    is_hyper = (r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 1.5)
+                    
                 is_hyper_perc = ("낡" in r['perceived_label'] or "밟" in r['perceived_label'])
-                if is_hyper_acoustic == is_hyper_perc:
+                if is_hyper == is_hyper_perc:
                     matches += 1
             acc = matches / len(df)
             if acc > best_acc:
@@ -127,9 +131,8 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
 
     t_start, t_end = None, None
     clean_kw = keyword.replace(" ", "").strip()
-    sub_kw = clean_kw[:2]  # '낡지' -> '낡지', '낡'
+    sub_kw = clean_kw[:2]
 
-    # Whisper 타임스탬프 탐색 (어절 일치 및 부분 일치)
     for seg in res.get("segments", []):
         for w in seg.get("words", []):
             w_text = w["word"].replace(" ", "").strip()
@@ -140,18 +143,13 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
         if t_start is not None:
             break
 
-    # 1차 보정: 단어 길이가 너무 길거나(문장 오인식) 너무 짧은 경우 방어
     is_valid_range = False
     if t_start is not None and t_end is not None:
         seg_dur = t_end - t_start
         if 0.18 <= seg_dur <= 0.95:
             is_valid_range = True
 
-    # 2차 비상 방어: 단어를 못 찾았거나 범위가 비정상일 때 문장 발화 중심부 강제 정밀 크롭
     if not is_valid_range:
-        # 문장 전체에서 발화가 일어나는 중심 에너지 위치 추정
-        # '신발이 너무 낡지 않았어?'에서 '낡지'는 대략 35% ~ 55% 지점
-        # '낙지가 너무 맛있지 않아?'에서 '낙지'는 대략 0% ~ 30% 지점
         if "낡" in keyword:
             t_start = max(0.2, total_len * 0.35)
             t_end = min(total_len - 0.2, t_start + 0.42)
@@ -161,11 +159,10 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
         elif "밟" in keyword:
             t_start = max(0.2, total_len * 0.32)
             t_end = min(total_len - 0.2, t_start + 0.45)
-        else: # 밥도둑
+        else:
             t_start = max(0.2, total_len * 0.30)
             t_end = min(total_len - 0.2, t_start + 0.45)
 
-    # 3음절 단어('밟도록', '밥도둑')는 앞 2음절('밟도', '밥도')로 축소
     if is_three:
         diff = t_end - t_start
         t_end = t_start + diff * 0.68
@@ -186,7 +183,6 @@ def compute_phonetic_metrics(sound, gender="남성"):
         f3_vals.append(formants.get_value_at_time(3, t))
         
     dur = float(sound.get_total_duration())
-    # 단어 모음 말단부(폐쇄 직전 45% ~ 80% 구간)에 집중하여 포먼트 추출
     t1, t2 = dur * 0.45, dur * 0.82
     offset_f3 = []
     for t in times:
@@ -198,6 +194,7 @@ def compute_phonetic_metrics(sound, gender="남성"):
     min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
     return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
 
+# 음운 환경(연구개음 ㄺ vs 양순음 ㄼ)에 따른 분기 판정
 def classify_pronunciation_adaptive(d_t, d_c, s_info):
     th_f3_rel, th_ratio = get_current_thresholds()
     
@@ -207,16 +204,31 @@ def classify_pronunciation_adaptive(d_t, d_c, s_info):
     
     denom = d_c["duration"] + 0.000001
     ratio = d_t["duration"] / denom
-    
-    if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.6):
-        verdict = s_info["cand_hyper"]
-        desc = f"모음 말단 F3 상대 하강율이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 제스처가 잔류하여 '이중조음형'으로 판정되었습니다."
-    elif drop_pct >= th_f3_rel * 2.5 and ratio < th_ratio:
-        verdict = s_info["cand_alt"]
-        desc = "폐쇄음이 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
+
+    is_bilabial_set = ("밟" in s_info["target_keyword"])
+
+    if is_bilabial_set:
+        # 세트 2 ('밟도록'): 양순 폐쇄음의 F3 하강 특성을 감안하여 조음 시간 지연(중첩)과 미세 F3 하강을 종합 평가
+        if ratio >= th_ratio or drop_pct >= (th_f3_rel * 0.6):
+            verdict = s_info["cand_hyper"]
+            desc = f"양순 폐쇄음([ㅂ]) 이전 유음 [ㄹ] 조음 제스처의 잔류로 인해 조음 구간 지속시간 비율이 {ratio:.2f}배(기준: {th_ratio:.2f}배)로 연장되어 '이중조음형([밟또록])'으로 판정되었습니다."
+        elif drop_pct >= (th_f3_rel * 2.0) and ratio < 0.98:
+            verdict = s_info["cand_alt"]
+            desc = "폐쇄음이 탈락하고 유음 성분이 지배적으로 실현되어 '[ㄹ] 선택형 단순화([발또록])'로 판정되었습니다."
+        else:
+            verdict = s_info["cand_std"]
+            desc = f"대조군('밥도둑')과 조음 지속시간 및 포먼트 궤적이 일치하여 단일 양순 폐쇄음 규범 단순화([밥또록])로 판정되었습니다."
     else:
-        verdict = s_info["cand_std"]
-        desc = f"대조군 대비 F3 변동폭({drop_pct:.1f}%)이 화자의 정상 조음 범위 내에 있어 단일 폐쇄음 규범 단순화로 판정되었습니다."
+        # 세트 1 ('낡지'): 연구개 폐쇄음 환경이므로 F3 상대 하강율 중심 평가
+        if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.5):
+            verdict = s_info["cand_hyper"]
+            desc = f"모음 말단 F3 상대 하강율이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 제스처가 잔류하여 '이중조음형([낡찌])'으로 판정되었습니다."
+        elif drop_pct >= th_f3_rel * 2.5 and ratio < th_ratio:
+            verdict = s_info["cand_alt"]
+            desc = "폐쇄음이 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화([날찌])'로 판정되었습니다."
+        else:
+            verdict = s_info["cand_std"]
+            desc = f"대조군 대비 F3 변동폭({drop_pct:.1f}%)이 정상 범위 내에 있어 단일 연구개 폐쇄음 규범 단순화([낙찌])로 판정되었습니다."
         
     return verdict, drop_hz, drop_pct, ratio, desc
 
@@ -309,7 +321,7 @@ if app_mode == "학생 발음 실험 참여":
             if not st_name.strip():
                 st.error("⚠️ 상단 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key=f"btn_eval_{step_idx}", use_container_width=True):
-                with st.spinner("표적 어절 핀셋 추출 및 음향 지표 정밀 산출 중..."):
+                with st.spinner("표적 어절 추출 및 음운 환경별 음향 지표 산출 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     pt = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['target_display']}_{stamp}.wav")
                     pc = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['control_display']}_{stamp}.wav")
