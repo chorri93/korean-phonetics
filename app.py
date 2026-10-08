@@ -69,30 +69,59 @@ def get_metrics(snd, gender="남성"):
     dur = float(snd.get_total_duration())
     ts = fmt.ts()
     f3s = [fmt.get_value_at_time(3, t) for t in ts]
+    f2s = [fmt.get_value_at_time(2, t) for t in ts]
 
-    off = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.45 <= t <= dur * 0.82 and not np.isnan(fmt.get_value_at_time(3, t))]
-    min_off = float(np.min(off)) if len(off) > 0 else 0.0
-    mid = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.50 <= t <= dur * 0.72 and not np.isnan(fmt.get_value_at_time(3, t))]
-    avg_mid = float(np.mean(mid)) if len(mid) > 0 else min_off
-    return {"snd": snd, "sg": sg, "ts": ts, "f3": f3s, "min_off": min_off, "avg_mid": avg_mid, "dur": dur}
+    # 모음 후반부 F3 최솟값
+    off_f3 = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.45 <= t <= dur * 0.85 and not np.isnan(fmt.get_value_at_time(3, t))]
+    min_off = float(np.min(off_f3)) if len(off_f3) > 0 else 0.0
+
+    # 모음 중앙부 F3 평균
+    mid_f3 = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.40 <= t <= dur * 0.65 and not np.isnan(fmt.get_value_at_time(3, t))]
+    avg_mid = float(np.mean(mid_f3)) if len(mid_f3) > 0 else min_off
+
+    # 모음 후반부 F3 - F2 간격(Band gap) 평균 계산 (유음성 수렴도 지표)
+    gaps = []
+    for t in ts:
+        if dur * 0.45 <= t <= dur * 0.85:
+            v2 = fmt.get_value_at_time(2, t)
+            v3 = fmt.get_value_at_time(3, t)
+            if not np.isnan(v2) and not np.isnan(v3):
+                gaps.append(v3 - v2)
+    avg_gap = float(np.mean(gaps)) if len(gaps) > 0 else 1200.0
+
+    return {"snd": snd, "sg": sg, "ts": ts, "f3": f3s, "min_off": min_off, "avg_mid": avg_mid, "avg_gap": avg_gap, "dur": dur}
 
 def classify(m_t, m_c, task):
-    drop_pct = ((m_c["min_off"] - m_t["min_off"]) / max(100.0, m_c["min_off"])) * 100.0
+    diff_f3 = m_c["min_off"] - m_t["min_off"]
+    drop_pct = (diff_f3 / max(100.0, m_c["min_off"])) * 100.0
     ratio = m_t["dur"] / (m_c["dur"] + 1e-6)
+    gap_diff = m_c["avg_gap"] - m_t["avg_gap"]  # 표적의 F3-F2 간격이 얼마나 더 좁혀졌는가
 
     if "밟" in task["kw_t"]:
-        m_drop = ((m_c["avg_mid"] - m_t["avg_mid"]) / max(100.0, m_c["avg_mid"])) * 100.0
-        if ratio >= 1.01 or m_drop >= 0.8 or drop_pct >= 1.0:
-            return task["cand"][2], drop_pct, ratio, "모음 후반부 F3 침하 및 조음 지속시간 연장 감지 ('이중조음형')"
-        elif drop_pct >= 6.0 and ratio < 0.98:
-            return task["cand"][1], drop_pct, ratio, "폐쇄음 약화 및 유음 성분 우세 ('[ㄹ] 선택형 단순화')"
-        return task["cand"][0], drop_pct, ratio, "대조군과 음향 궤적 일치 (단일 양순 폐쇄음 규범 단순화)"
+        # 모음 자체 내에서의 하강폭
+        internal_drop = m_t["avg_mid"] - m_t["min_off"]
+
+        # 이중조음 판정 기준:
+        # 1. 대조군 대비 F3가 70Hz 이상 낮거나,
+        # 2. 대조군 대비 F3-F2 간격이 120Hz 이상 좁아지거나,
+        # 3. 자체 내부 F3 하강이 80Hz 이상이면서 지속시간이 유사/연장될 때
+        is_hyper = (diff_f3 >= 70.0) or (gap_diff >= 120.0) or (internal_drop >= 80.0 and ratio >= 0.96) or (drop_pct >= 0.6 and ratio >= 0.99)
+        
+        # 완전 유음화 판정 기준 (폐쇄음이 상실되고 ㄹ 성분만 남은 경우)
+        is_alt = (drop_pct >= 7.0 and ratio < 0.95 and gap_diff >= 200.0)
+
+        if is_alt:
+            return task["cand"][1], drop_pct, ratio, "양순 폐쇄음 성분이 실종되고 유음 성분이 지배적 ('[ㄹ] 선택형 단순화')"
+        elif is_hyper:
+            return task["cand"][2], drop_pct, ratio, "모음 말단 F3 하강 및 F2-F3 수렴 구조 감지 ('이중조음/과도교정형')"
+        return task["cand"][0], drop_pct, ratio, "대조군과 음향 궤적 및 포먼트 간격 일치 (단일 양순 폐쇄음 규범 단순화)"
     else:
-        if (drop_pct >= 1.8 and ratio >= 1.02) or drop_pct >= 2.7:
+        # '낡지' 계열 판정
+        if (drop_pct >= 1.6 and ratio >= 0.98) or diff_f3 >= 60.0:
             return task["cand"][2], drop_pct, ratio, "모음 말단 F3 상대 하강 뚜렷 ('이중조음형')"
-        elif drop_pct >= 4.5 and ratio < 1.02:
-            return task["cand"][1], drop_pct, ratio, "폐쇄음 약화 및 유음 성분 우세 ('[ㄹ] 선택형 단순화')"
-        return task["cand"][0], drop_pct, ratio, "변동폭 정상 범위 (단일 연구개 폐쇄음 규범 단순화)"
+        elif drop_pct >= 5.0 and ratio < 0.98:
+            return task["cand"][1], drop_pct, ratio, "연구개 폐쇄음 약화 및 유음 성분 우세 ('[ㄹ] 선택형 단순화')"
+        return task["cand"][0], drop_pct, ratio, "대조군 대비 변동폭 정상 범위 (단일 연구개 폐쇄음 규범 단순화)"
 
 def plot_spec(m_t, m_c, w_t, w_c):
     fig, axes = plt.subplots(2, 2, figsize=(12, 5.5), sharey="row")
