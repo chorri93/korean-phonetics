@@ -69,17 +69,13 @@ def get_metrics(snd, gender="남성"):
     dur = float(snd.get_total_duration())
     ts = fmt.ts()
     f3s = [fmt.get_value_at_time(3, t) for t in ts]
-    f2s = [fmt.get_value_at_time(2, t) for t in ts]
 
-    # 모음 후반부 F3 최솟값
     off_f3 = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.45 <= t <= dur * 0.85 and not np.isnan(fmt.get_value_at_time(3, t))]
     min_off = float(np.min(off_f3)) if len(off_f3) > 0 else 0.0
 
-    # 모음 중앙부 F3 평균
     mid_f3 = [fmt.get_value_at_time(3, t) for t in ts if dur * 0.40 <= t <= dur * 0.65 and not np.isnan(fmt.get_value_at_time(3, t))]
     avg_mid = float(np.mean(mid_f3)) if len(mid_f3) > 0 else min_off
 
-    # 모음 후반부 F3 - F2 간격(Band gap) 평균 계산 (유음성 수렴도 지표)
     gaps = []
     for t in ts:
         if dur * 0.45 <= t <= dur * 0.85:
@@ -95,19 +91,11 @@ def classify(m_t, m_c, task):
     diff_f3 = m_c["min_off"] - m_t["min_off"]
     drop_pct = (diff_f3 / max(100.0, m_c["min_off"])) * 100.0
     ratio = m_t["dur"] / (m_c["dur"] + 1e-6)
-    gap_diff = m_c["avg_gap"] - m_t["avg_gap"]  # 표적의 F3-F2 간격이 얼마나 더 좁혀졌는가
+    gap_diff = m_c["avg_gap"] - m_t["avg_gap"]
 
     if "밟" in task["kw_t"]:
-        # 모음 자체 내에서의 하강폭
         internal_drop = m_t["avg_mid"] - m_t["min_off"]
-
-        # 이중조음 판정 기준:
-        # 1. 대조군 대비 F3가 70Hz 이상 낮거나,
-        # 2. 대조군 대비 F3-F2 간격이 120Hz 이상 좁아지거나,
-        # 3. 자체 내부 F3 하강이 80Hz 이상이면서 지속시간이 유사/연장될 때
         is_hyper = (diff_f3 >= 70.0) or (gap_diff >= 120.0) or (internal_drop >= 80.0 and ratio >= 0.96) or (drop_pct >= 0.6 and ratio >= 0.99)
-        
-        # 완전 유음화 판정 기준 (폐쇄음이 상실되고 ㄹ 성분만 남은 경우)
         is_alt = (drop_pct >= 7.0 and ratio < 0.95 and gap_diff >= 200.0)
 
         if is_alt:
@@ -116,7 +104,6 @@ def classify(m_t, m_c, task):
             return task["cand"][2], drop_pct, ratio, "모음 말단 F3 하강 및 F2-F3 수렴 구조 감지 ('이중조음/과도교정형')"
         return task["cand"][0], drop_pct, ratio, "대조군과 음향 궤적 및 포먼트 간격 일치 (단일 양순 폐쇄음 규범 단순화)"
     else:
-        # '낡지' 계열 판정
         if (drop_pct >= 1.6 and ratio >= 0.98) or diff_f3 >= 60.0:
             return task["cand"][2], drop_pct, ratio, "모음 말단 F3 상대 하강 뚜렷 ('이중조음형')"
         elif drop_pct >= 5.0 and ratio < 0.98:
@@ -295,27 +282,82 @@ elif mode == "교수/연구자 관리자 모드":
                 c_name = st.selectbox("조회할 참가자 선택:", names)
                 u_df = df[df['name'] == c_name].sort_values(by="task_id", ascending=True)
 
-                cols = st.columns(len(u_df))
-                for i, (_, row) in enumerate(u_df.iterrows()):
-                    with cols[i]:
-                        st.markdown("#### 📌 과제 " + str(row['task_id']))
-                        st.write("• 기계 판정: **" + str(row['classified']) + "**\n• 학생 자각: **" + str(row['perceived']) + "**")
-                        if row['expert'] and row['expert'] != "None":
-                            st.success("👑 연구자 확정: " + str(row['expert']))
+                for _, row in u_df.iterrows():
+                    task_idx = int(row['task_id']) - 1
+                    t_info = SETS[task_idx]
+                    cand_opts = t_info["cand"]
 
-                        if os.path.exists(row['path_t']):
-                            st.caption("표적 발화 음성:")
+                    st.markdown("---")
+                    st.subheader(f"📌 {t_info['title']}")
+
+                    # 대조 문장 및 자극 문장 안내 박스
+                    c_sent1, c_sent2 = st.columns(2)
+                    with c_sent1:
+                        st.markdown(f"**🗣️ 문장 1 (표적: '{t_info['disp_t']}'):**")
+                        st.warning(f"**{t_info['s_t']}**")
+                    with c_sent2:
+                        st.markdown(f"**🗣️ 문장 2 (대조: '{t_info['disp_c']}'):**")
+                        st.info(f"**{t_info['s_c']}**")
+
+                    # 음향 판정 & 자각 발음 & 연구자 확정 요약
+                    p_col1, p_col2, p_col3 = st.columns(3)
+                    with p_col1:
+                        st.write("• **기계 판정:** " + str(row['classified']))
+                    with p_col2:
+                        st.write("• **학생 자각:** " + str(row['perceived']))
+                    with p_col3:
+                        if row['expert'] and str(row['expert']) != "None":
+                            st.success("👑 **연구자 확정:** " + str(row['expert']))
+                        else:
+                            st.caption("연구자 미판정 상태")
+
+                    # 음성 파일 재생 (표적음 vs 대조음)
+                    a_col1, a_col2 = st.columns(2)
+                    has_t = os.path.exists(str(row['path_t']))
+                    has_c = os.path.exists(str(row['path_c']))
+
+                    with a_col1:
+                        if has_t:
+                            st.caption(f"🎧 표적 발화 음성 ('{t_info['disp_t']}'):")
                             st.audio(row['path_t'])
+                        else:
+                            st.caption("표적 음성 파일 없음")
+                    with a_col2:
+                        if has_c:
+                            st.caption(f"🎧 대조군 발화 음성 ('{t_info['disp_c']}'):")
+                            st.audio(row['path_c'])
+                        else:
+                            st.caption("대조군 음성 파일 없음")
 
-                        cand_opts = SETS[int(row['task_id']) - 1]["cand"]
-                        def_i = 0
-                        for idx_c, c_text in enumerate(cand_opts):
-                            if row['expert'] and row['expert'].split(" ")[0] in c_text:
-                                def_i = idx_c
-                                break
+                    # 스펙트로그램 비교 시각화 (Expander)
+                    with st.expander("🔍 스펙트로그램 및 포먼트 궤적 비교 열기"):
+                        if has_t and has_c:
+                            try:
+                                snd_t = parselmouth.Sound(str(row['path_t']))
+                                snd_c = parselmouth.Sound(str(row['path_c']))
+                                g_val = str(row['gender']) if 'gender' in row else "남성"
+                                pf_t = get_metrics(snd_t, g_val)
+                                pf_c = get_metrics(snd_c, g_val)
+                                st.pyplot(plot_spec(pf_t, pf_c, t_info['disp_t'], t_info['disp_c']))
+                            except Exception as e:
+                                st.caption("스펙트로그램 생성 중 오류: " + str(e))
+                        else:
+                            st.info("음성 파일이 존재하지 않아 스펙트로그램을 표시할 수 없습니다.")
 
-                        chosen_e = st.selectbox("판독 (ID " + str(row['id']) + ")", cand_opts, index=def_i, key="sel_" + str(row['id']))
-                        if st.button("💾 연구자 판독 저장", key="btn_" + str(row['id'])):
+                    # 연구자 판정 입력
+                    def_i = 0
+                    for idx_c, c_text in enumerate(cand_opts):
+                        if row['expert'] and row['expert'].split(" ")[0] in c_text:
+                            def_i = idx_c
+                            break
+
+                    ch_col, btn_col = st.columns([3, 1])
+                    with ch_col:
+                        chosen_e = st.selectbox("연구자 판정 선택", cand_opts, index=def_i, key="sel_" + str(row['id']))
+                    with btn_col:
+                        st.write("")
+                        st.write("")
+                        if st.button("💾 판독 저장", key="btn_" + str(row['id']), use_container_width=True):
                             conn = sqlite3.connect(DB_PATH)
                             conn.cursor().execute("UPDATE results SET expert = ? WHERE id = ?", (chosen_e, row['id']))
                             conn.commit()
