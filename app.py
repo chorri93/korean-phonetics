@@ -60,7 +60,6 @@ def init_db():
         ("세트 3: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟도록", "밥도둑", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
     ]
     
-    # DB 자극문 순서 최신화
     c.execute("DELETE FROM stimulus_sets")
     for item in target_sets:
         c.execute("""INSERT INTO stimulus_sets (set_name, sentence_target, sentence_control, target_keyword, control_keyword, target_display, control_display, cand_std, cand_alt, cand_hyper, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
@@ -253,88 +252,4 @@ def classify_pronunciation_adaptive(d_t, d_c, s_info):
             desc = f"폐쇄음이 완전히 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화({alt_stem})'로 판정되었습니다."
         else:
             verdict = s_info["cand_std"]
-            desc = f"대조군과 포먼트 궤적이 일치하여 단일 양순 폐쇄음 규범 단순화({std_stem})로 판정되었습니다."
-    else:
-        if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.5):
-            verdict = s_info["cand_hyper"]
-            desc = f"모음 말단 F3 상대 하강율이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 제스처가 잔류하여 '이중조음형([낡찌])'으로 판정되었습니다."
-        elif drop_pct >= th_f3_rel * 2.5 and ratio < th_ratio:
-            verdict = s_info["cand_alt"]
-            desc = "폐쇄음이 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화([날찌])'로 판정되었습니다."
-        else:
-            verdict = s_info["cand_std"]
-            desc = f"대조군 대비 F3 변동폭({drop_pct:.1f}%)이 정상 범위 내에 있어 단일 연구개 폐쇄음 규범 단순화([낙찌])로 판정되었습니다."
-        
-    return verdict, drop_hz, drop_pct, ratio, desc
-
-def plot_phonetics(snd_t, snd_c, pf_t, pf_c, w_t, w_c):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 6.5), sharey="row")
-    sg_t, sg_c = pf_t["spectrogram"], pf_c["spectrogram"]
-    
-    axes[0, 0].pcolormesh(sg_t.x_grid(), sg_t.y_grid(), 10 * np.log10(sg_t.values), cmap="viridis", shading="auto")
-    axes[0, 0].plot(pf_t["times"], pf_t["f3"], color="red", linewidth=2.5, label="F3 Track")
-    axes[0, 0].set_title(f"Target: '{w_t}' Spectrogram", fontsize=12, fontweight='bold')
-    axes[0, 0].set_ylim(0, 4500)
-    axes[0, 0].set_ylabel("Frequency (Hz)")
-    axes[0, 0].legend(loc="upper right")
-    
-    axes[0, 1].pcolormesh(sg_c.x_grid(), sg_c.y_grid(), 10 * np.log10(sg_c.values), cmap="viridis", shading="auto")
-    axes[0, 1].plot(pf_c["times"], pf_c["f3"], color="red", linewidth=2.5, label="F3 Track")
-    axes[0, 1].set_title(f"Control: '{w_c}' Spectrogram", fontsize=12, fontweight='bold')
-    axes[0, 1].set_ylim(0, 4500)
-    axes[0, 1].legend(loc="upper right")
-    
-    axes[1, 0].plot(snd_t.xs(), snd_t.values.T, color="#333")
-    axes[1, 0].set_title(f"'{w_t}' Waveform ({pf_t['duration']:.2f}s)", fontsize=11)
-    axes[1, 0].set_xlabel("Time (s)")
-    
-    axes[1, 1].plot(snd_c.xs(), snd_c.values.T, color="#005588")
-    axes[1, 1].set_title(f"'{w_c}' Waveform ({pf_c['duration']:.2f}s)", fontsize=11)
-    axes[1, 1].set_xlabel("Time (s)")
-    
-    plt.tight_layout()
-    return fig
-
-st.sidebar.title("메뉴 선택")
-app_mode = st.sidebar.radio("모드 선택", ["학생 발음 실험 참여", "교수/연구자 관리자 모드"])
-
-# ==========================================================
-# 1. 학생 발음 실험 참여
-# ==========================================================
-if app_mode == "학생 발음 실험 참여":
-    st.title("🎙️ 국어음운론 현실 발음 대조 실습")
-    st.info("📢 **실험 참여 안내**\n\n이 실험의 목적은 한국어 사용자의 현실 발음을 조사하는 것입니다. 그러므로 표준 발음대로 발음하려고 시도하지 말고, 평소의 발음 습관대로 예문을 읽고 녹음해 주시기 바랍니다. 녹음된 파일은 연구용으로만 사용되며 다른 용도로 이용되지 않습니다.")
-
-    with st.expander("👤 1단계: 연구 참가자 기본 정보 입력", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st_name = st.text_input("이름 (또는 닉네임)")
-        with c2: st_gender = st.selectbox("성별", ["여성", "남성", "기타"])
-        with c3: st_age = st.number_input("나이(만)", 5, 90, 22, 1)
-        with c4: st_region = st.selectbox("유년기 성장 지역", ["수도권(서울/경기/인천)", "경남(창원/마산/진주 등)", "부산", "대구", "경북", "충청도", "전라도", "강원도", "제주도", "기타/해외"])
-
-    conn = sqlite3.connect(DB_PATH)
-    sets_df = pd.read_sql_query("SELECT * FROM stimulus_sets ORDER BY id ASC", conn)
-    conn.close()
-
-    total_sets = len(sets_df)
-    if "current_step" not in st.session_state:
-        st.session_state.current_step = 0
-    step_idx = st.session_state.current_step
-
-    if step_idx < total_sets:
-        cur_set = sets_df.iloc[step_idx]
-        st.progress(step_idx / total_sets, text=f"전체 실험 진행 상황: {step_idx + 1} / {total_sets} 단계")
-        st.subheader(f"과제 {step_idx + 1}")
-
-        k_t, k_c = f"rec_t_{cur_set['id']}", f"rec_c_{cur_set['id']}"
-        if k_t not in st.session_state: st.session_state[k_t] = None
-        if k_c not in st.session_state: st.session_state[k_c] = None
-
-        st.caption("※ 평소 말하는 속도와 억양으로 자연스럽게 소리 내어 읽어주세요.")
-        col_t, col_c = st.columns(2)
-        with col_t:
-            st.markdown("**문장 1**")
-            st.warning(f"🗣️ {cur_set['sentence_target']}")
-            r_t = mic_recorder(start_prompt="🔴 문장 1 녹음 시작", stop_prompt="⏹️ 녹음 완료", key=f"mic_t_{step_idx}")
-            if r_t: st.session_state[k_t] = r_t["bytes"]
-            if st.session_state[k_t]: st.audio(st.session_state[k_t], format="audio/wav")
+            desc = f"대조군과 포먼트 궤적이 일치하여 단일 양순
