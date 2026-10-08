@@ -19,65 +19,48 @@ AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 DB_PATH = "phonetics_research.db"
 
-DEFAULT_SETS = [
+SETS = [
     {
         "id": 1,
-        "set_name": "세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')",
-        "sentence_target": "신발이 너무 낡지 않았어?",
-        "sentence_control": "낙지가 너무 맛있지 않아?",
-        "target_keyword": "낡지",
-        "control_keyword": "낙지",
-        "target_display": "낡지",
-        "control_display": "낙지",
-        "cand_std": "[낙찌] (표준: ㄱ단순화)",
-        "cand_alt": "[날찌] (비표준: ㄹ단순화)",
-        "cand_hyper": "[낡찌] (과도교정: 이중조음)",
-        "description": "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"
+        "title": "과제 1: '낡지' vs '낙지'",
+        "s_t": "신발이 너무 낡지 않았어?",
+        "s_c": "낙지가 너무 맛있지 않아?",
+        "kw_t": "낡지", "kw_c": "낙지",
+        "disp_t": "낡지", "disp_c": "낙지",
+        "cand": ["[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)"],
+        "rule": "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"
     },
     {
         "id": 2,
-        "set_name": "세트 2: 어간 말 'ㄼ' 발음 조사 ('밟지' vs '밥지리')",
-        "sentence_target": "내 발 좀 밟지 마.",
-        "sentence_control": "전남에서는 벙어리를 밥지리라 한다.",
-        "target_keyword": "밟지",
-        "control_keyword": "밥지리",
-        "target_display": "밟지",
-        "control_display": "밥지",
-        "cand_std": "[밥찌] (표준: ㅂ단순화)",
-        "cand_alt": "[발찌] (일반화 오류: ㄹ단순화)",
-        "cand_hyper": "[밟찌] (과도교정: 이중조음)",
-        "description": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"
+        "title": "과제 2: '밟지' vs '밥지리'",
+        "s_t": "내 발 좀 밟지 마.",
+        "s_c": "전남에서는 벙어리를 밥지리라 한다.",
+        "kw_t": "밟지", "kw_c": "밥지리",
+        "disp_t": "밟지", "disp_c": "밥지",
+        "cand": ["[밥찌] (표준: ㅂ단순화)", "[발찌] (일반화 오류: ㄹ단순화)", "[밟찌] (과도교정: 이중조음)"],
+        "rule": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"
     },
     {
         "id": 3,
-        "set_name": "세트 3: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')",
-        "sentence_target": "이 부분을 밟도록 해",
-        "sentence_control": "간장게장을 밥도둑이라고 해",
-        "target_keyword": "밟도록",
-        "control_keyword": "밥도둑",
-        "target_display": "밟도",
-        "control_display": "밥도",
-        "cand_std": "[밥또록] (표준: ㅂ단순화)",
-        "cand_alt": "[발또록] (일반화 오류: ㄹ단순화)",
-        "cand_hyper": "[밟또록] (과도교정: 이중조음)",
-        "description": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"
+        "title": "과제 3: '밟도록' vs '밥도둑'",
+        "s_t": "이 부분을 밟도록 해",
+        "s_c": "간장게장을 밥도둑이라고 해",
+        "kw_t": "밟도록", "kw_c": "밥도둑",
+        "disp_t": "밟도", "disp_c": "밥도",
+        "cand": ["[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)"],
+        "rule": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"
     }
 ]
 
 def init_db():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS participant_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, student_name TEXT, gender TEXT, age INTEGER, hometown TEXT,
-            set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, f3_drop_pct REAL, duration_target REAL, duration_control REAL,
-            closure_ratio REAL, classified_label TEXT, perceived_label TEXT, expert_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS system_thresholds (id INTEGER PRIMARY KEY, th_f3_rel REAL, th_ratio REAL, updated_at TEXT)""")
-        c.execute("INSERT OR IGNORE INTO system_thresholds (id, th_f3_rel, th_ratio, updated_at) VALUES (1, 1.8, 1.02, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, name TEXT, gender TEXT, age INTEGER, region TEXT,
+        task_id INTEGER, target_word TEXT, drop_pct REAL, ratio REAL,
+        classified TEXT, perceived TEXT, expert TEXT, path_t TEXT, path_c TEXT)""")
+    conn.commit()
+    conn.close()
 
 init_db()
 
@@ -85,6 +68,33 @@ init_db()
 def get_whisper():
     return whisper.load_model("tiny")
 
-def convert_and_save_audio(audio_bytes, out_path):
-    temp = out_path + ".temp"
-    with open(temp, "wb") as f:
+def save_wav(audio_bytes, path):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(audio_bytes)
+    subprocess.run(["ffmpeg", "-y", "-i", tmp, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
+def slice_word(audio_bytes, kw, path, is_three=False):
+    save_wav(audio_bytes, path)
+    res = get_whisper().transcribe(path, word_timestamps=True, language="ko")
+    snd = parselmouth.Sound(path)
+    dur = float(snd.get_total_duration())
+
+    t0, t1 = None, None
+    clean_k = kw.replace(" ", "").strip()
+    sub_k = clean_k[:2]
+
+    for seg in res.get("segments", []):
+        for w in seg.get("words", []):
+            txt = w["word"].replace(" ", "").strip()
+            if (clean_k in txt) or (sub_k in txt):
+                t0, t1 = float(w["start"]), float(w["end"])
+                break
+        if t0 is not None:
+            break
+
+    if (t0 is None) or (t1 is None) or not (0.18 <= (t1 - t0) <= 0.95):
+        if "낡" in kw: t0, t1 = dur * 0.35, dur * 0.35 + 0.42
+        elif "
