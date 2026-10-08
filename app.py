@@ -285,6 +285,24 @@ elif mode == "교수/연구자 관리자 모드":
                             conn.close()
                             st.rerun()
 
-                st.markdown("---")
-                if st.button("🚨 '" + str(c_name) + "' 참가자 데이터 삭제", type="primary"):
+st.markdown("---")
+                del_btn_key = "btn_del_" + str(c_name)
+                if st.button("🚨 '" + str(c_name) + "' 참가자 데이터 영구 삭제", key=del_btn_key, type="primary", use_container_width=True):
+                    # 1. 서버에 저장된 해당 학생의 오디오 파일(.wav) 실제 삭제
+                    for _, d_row in u_df.iterrows():
+                        if os.path.exists(str(d_row['path_t'])):
+                            try: os.remove(str(d_row['path_t']))
+                            except: pass
+                        if os.path.exists(str(d_row['path_c'])):
+                            try: os.remove(str(d_row['path_c']))
+                            except: pass
+                    
+                    # 2. SQLite DB에서 해당 학생 레코드 영구 삭제 및 확실한 커밋
                     conn = sqlite3.connect(DB_PATH)
+                    c = conn.cursor()
+                    c.execute("DELETE FROM results WHERE name = ?", (str(c_name),))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success("'" + str(c_name) + "' 참가자 데이터가 완전히 삭제되었습니다.")
+                    st.rerun()
