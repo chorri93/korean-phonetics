@@ -20,11 +20,17 @@ AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 DB_PATH = "phonetics_research.db"
 
+DEFAULT_SETS = [
+    (1, "세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡지", "낙지", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
+    (2, "세트 2: 어간 말 'ㄼ' 발음 조사 ('밟지' vs '밥지리')", "내 발 좀 밟지 마.", "전남에서는 벙어리를 밥지리라 한다.", "밟지", "밥지리", "밟지", "밥지", "[밥찌] (표준: ㅂ단순화)", "[발찌] (일반화 오류: ㄹ단순화)", "[밟찌] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"),
+    (3, "세트 3: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟도록", "밥도둑", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
+]
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS stimulus_sets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, set_name TEXT UNIQUE, sentence_target TEXT, sentence_control TEXT,
+        id INTEGER PRIMARY KEY, set_name TEXT UNIQUE, sentence_target TEXT, sentence_control TEXT,
         target_keyword TEXT, control_keyword TEXT, target_display TEXT, control_display TEXT,
         cand_std TEXT, cand_alt TEXT, cand_hyper TEXT, description TEXT)""")
         
@@ -53,16 +59,11 @@ def init_db():
         try: c.execute("ALTER TABLE participant_results ADD COLUMN expert_label TEXT")
         except: pass
 
-    # 세트 1('낡지') -> 세트 2('밟지') -> 세트 3('밟도록') 순서로 정렬
-    target_sets = [
-        ("세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡지", "낙지", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
-        ("세트 2: 어간 말 'ㄼ' 발음 조사 ('밟지' vs '밥지리')", "내 발 좀 밟지 마.", "전남에서는 벙어리를 밥지리라 한다.", "밟지", "밥지리", "밟지", "밥지", "[밥찌] (표준: ㅂ단순화)", "[발찌] (일반화 오류: ㄹ단순화)", "[밟찌] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"),
-        ("세트 3: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟도록", "밥도둑", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
-    ]
-    
-    c.execute("DELETE FROM stimulus_sets")
-    for item in target_sets:
-        c.execute("""INSERT INTO stimulus_sets (set_name, sentence_target, sentence_control, target_keyword, control_keyword, target_display, control_display, cand_std, cand_alt, cand_hyper, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
+    # 안전한 INSERT OR REPLACE (DELETE 구문 제거로 빈 화면 버그 해결)
+    for item in DEFAULT_SETS:
+        c.execute("""INSERT OR REPLACE INTO stimulus_sets 
+        (id, set_name, sentence_target, sentence_control, target_keyword, control_keyword, target_display, control_display, cand_std, cand_alt, cand_hyper, description) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
     conn.commit()
     conn.close()
 
@@ -140,14 +141,4 @@ def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
     convert_and_save_audio(audio_bytes, save_path)
     res = get_whisper().transcribe(save_path, word_timestamps=True, language="ko")
     sound = parselmouth.Sound(save_path)
-    total_len = float(sound.get_total_duration())
-
-    t_start, t_end = None, None
-    clean_kw = keyword.replace(" ", "").strip()
-    sub_kw = clean_kw[:2]
-
-    for seg in res.get("segments", []):
-        for w in seg.get("words", []):
-            w_text = w["word"].replace(" ", "").strip()
-            if (clean_kw in w_text) or (sub_kw in w_text):
-                t_start = float(w["start"])
+    total_len = float(sound.get_
