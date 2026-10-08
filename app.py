@@ -23,18 +23,28 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, set_name TEXT UNIQUE, sentence_target TEXT, sentence_control TEXT,
         target_keyword TEXT, control_keyword TEXT, target_display TEXT, control_display TEXT,
         cand_std TEXT, cand_alt TEXT, cand_hyper TEXT, description TEXT)""")
+        
     c.execute("""CREATE TABLE IF NOT EXISTS participant_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, student_name TEXT, gender TEXT, age INTEGER, hometown TEXT,
-        set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, duration_target REAL, duration_control REAL,
+        set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, f3_drop_pct REAL, duration_target REAL, duration_control REAL,
         closure_ratio REAL, classified_label TEXT, perceived_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
-    
+        
+    c.execute("""CREATE TABLE IF NOT EXISTS system_thresholds (
+        id INTEGER PRIMARY KEY,
+        th_f3_rel REAL,
+        th_ratio REAL,
+        updated_at TEXT)""")
+        
+    c.execute("INSERT OR IGNORE INTO system_thresholds (id, th_f3_rel, th_ratio, updated_at) VALUES (1, 1.8, 1.02, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
     c.execute("PRAGMA table_info(participant_results)")
     cols = [row[1] for row in c.fetchall()]
     if "perceived_label" not in cols:
-        try:
-            c.execute("ALTER TABLE participant_results ADD COLUMN perceived_label TEXT")
-        except:
-            pass
+        try: c.execute("ALTER TABLE participant_results ADD COLUMN perceived_label TEXT")
+        except: pass
+    if "f3_drop_pct" not in cols:
+        try: c.execute("ALTER TABLE participant_results ADD COLUMN f3_drop_pct REAL")
+        except: pass
 
     initial = [
         ("세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡", "낙", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
@@ -46,6 +56,51 @@ def init_db():
     conn.close()
 
 init_db()
+
+def get_current_thresholds():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT th_f3_rel, th_ratio FROM system_thresholds WHERE id = 1")
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return float(row[0]), float(row[1])
+    return 1.8, 1.02
+
+def auto_calibrate_thresholds():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT f3_drop_pct, closure_ratio, perceived_label FROM participant_results WHERE perceived_label IS NOT NULL AND f3_drop_pct IS NOT NULL", conn)
+    conn.close()
+    
+    if len(df) < 4:
+        return
+        
+    best_acc = -1.0
+    best_th_f3 = 1.8
+    best_th_ratio = 1.02
+    
+    cand_f3 = [0.8, 1.2, 1.5, 1.8, 2.2, 2.8, 3.5]
+    cand_ratio = [0.98, 1.01, 1.03, 1.05, 1.08]
+    
+    for tf in cand_f3:
+        for tr in cand_ratio:
+            matches = 0
+            for _, r in df.iterrows():
+                is_hyper_acoustic = (r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 1.5)
+                is_hyper_perc = ("낡" in r['perceived_label'] or "밟" in r['perceived_label'])
+                if is_hyper_acoustic == is_hyper_perc:
+                    matches += 1
+            acc = matches / len(df)
+            if acc > best_acc:
+                best_acc = acc
+                best_th_f3 = tf
+                best_th_ratio = tr
+                
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE system_thresholds SET th_f3_rel = ?, th_ratio = ?, updated_at = ? WHERE id = 1", (best_th_f3, best_th_ratio, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
 
 @st.cache_resource
 def get_whisper():
@@ -104,23 +159,27 @@ def compute_phonetic_metrics(sound, gender="남성"):
     min_off = float(np.min(offset_f3)) if len(offset_f3) > 0 else 0.0
     return {"sound": sound, "spectrogram": spectrogram, "times": times, "f3": f3_vals, "min_off": min_off, "duration": dur}
 
-def classify_pronunciation(d_t, d_c, s_info):
-    drop = d_c["min_off"] - d_t["min_off"]
+def classify_pronunciation_adaptive(d_t, d_c, s_info):
+    th_f3_rel, th_ratio = get_current_thresholds()
+    
+    drop_hz = d_c["min_off"] - d_t["min_off"]
+    base_f3 = max(100.0, d_c["min_off"])
+    drop_pct = (drop_hz / base_f3) * 100.0
+    
     denom = d_c["duration"] + 0.000001
     ratio = d_t["duration"] / denom
-    if drop >= 70.0 and ratio >= 1.06:
+    
+    if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.6):
         verdict = s_info["cand_hyper"]
-        desc = "모음 말단 F3 하강과 조음 제스처 중첩으로 인한 지속시간 연장이 함께 포착되어 '이중조음형'으로 판정되었습니다."
-    elif drop >= 160.0 and ratio < 1.06:
+        desc = f"화자의 대조군 대비 모음 말단 F3 하강률이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 잔여 성분이 명확하여 '이중조음형'으로 판정되었습니다."
+    elif drop_pct >= th_f3_rel * 2.5 and ratio < th_ratio:
         verdict = s_info["cand_alt"]
-        desc = "폐쇄음이 약화되고 유음 [ㄹ] 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
-    elif drop >= 70.0 and ratio < 1.06:
-        verdict = s_info["cand_hyper"]
-        desc = "모음 말단 F3 궤적에서 유음화 조음 잔여 효과가 포착되어 '이중조음형'으로 판정되었습니다."
+        desc = "폐쇄음이 현저히 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
     else:
         verdict = s_info["cand_std"]
-        desc = "대조군과 F3 궤적 및 지속시간이 일치하여 규범에 맞게 단일 폐쇄음으로 깔끔하게 단순화되었습니다."
-    return verdict, drop, ratio, desc
+        desc = f"대조군 대비 F3 하강률({drop_pct:.1f}%)이 화자의 정상 조음 변이 범위 내에 있어 단일 폐쇄음 규범 단순화로 판정되었습니다."
+        
+    return verdict, drop_hz, drop_pct, ratio, desc
 
 def plot_phonetics(snd_t, snd_c, pf_t, pf_c, w_t, w_c):
     fig, axes = plt.subplots(2, 2, figsize=(14, 6.5), sharey="row")
@@ -192,7 +251,6 @@ if app_mode == "학생 발음 실험 참여":
 
         if st.session_state[k_t] and st.session_state[k_c]:
             st.markdown("---")
-            # 문장 녹음 완료 후에만 명확히 질문 제시
             t_disp = cur_set['target_display']
             p1 = cur_set['cand_std'].split(" ")[0]
             p2 = cur_set['cand_alt'].split(" ")[0]
@@ -215,16 +273,20 @@ if app_mode == "학생 발음 실험 참여":
                     snd_c, st_c, ed_c = extract_aligned_audio(st.session_state[k_c], cur_set["control_keyword"], pc, is_3)
                     pf_t = compute_phonetic_metrics(snd_t, st_gender)
                     pf_c = compute_phonetic_metrics(snd_c, st_gender)
-                    verdict, drop, ratio, desc = classify_pronunciation(pf_t, pf_c, cur_set)
+                    
+                    verdict, drop_hz, drop_pct, ratio, desc = classify_pronunciation_adaptive(pf_t, pf_c, cur_set)
 
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
-                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, duration_target, duration_control, closure_ratio, classified_label, perceived_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop, pf_t["duration"], pf_c["duration"], ratio, verdict, user_perceived, pt, pc))
+                    c.execute("""INSERT INTO participant_results (created_at, student_name, gender, age, hometown, set_name, target_display, control_display, f3_drop, f3_drop_pct, duration_target, duration_control, closure_ratio, classified_label, perceived_label, audio_path_target, audio_path_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st_name.strip(), st_gender, st_age, st_region, cur_set['set_name'], cur_set['target_display'], cur_set['control_display'], drop_hz, drop_pct, pf_t["duration"], pf_c["duration"], ratio, verdict, user_perceived, pt, pc))
                     conn.commit()
                     conn.close()
 
+                    # 피드백 기반 자동 임계값 보정 실행
+                    auto_calibrate_thresholds()
+
                     st.session_state[f"eval_{step_idx}"] = {
-                        "verdict": verdict, "drop": drop, "ratio": ratio, "desc": desc,
+                        "verdict": verdict, "drop_hz": drop_hz, "drop_pct": drop_pct, "ratio": ratio, "desc": desc,
                         "perceived": user_perceived, "snd_t": snd_t, "snd_c": snd_c,
                         "pf_t": pf_t, "pf_c": pf_c, "set": cur_set
                     }
@@ -251,7 +313,7 @@ if app_mode == "학생 발음 실험 참여":
                 <b style="color: {match_color}; font-size: 15px;">{match_txt}</b><br>
                 <span style="font-size: 14px; color: #444;">
                     • <b>화자가 스스로 자각한 발음:</b> <span style="font-weight:700;">{ev['perceived']}</span><br>
-                    • <b>음향 측정 기반 실제 판정:</b> <span style="font-weight:700;">{ev['verdict']}</span>
+                    • <b>개인화 정규화 기반 실제 판정:</b> <span style="font-weight:700;">{ev['verdict']}</span>
                 </span>
             </div>
             """, unsafe_allow_html=True)
@@ -260,7 +322,7 @@ if app_mode == "학생 발음 실험 참여":
             st.info(f"📘 **관련 음운 규칙:** {ev['set']['description']}")
             m1, m2, m3 = st.columns(3)
             m1.metric("최종 음향 판정형", ev['verdict'])
-            m2.metric("모음 말단 F3 하강치", f"{int(ev['drop'])} Hz")
+            m2.metric("개인별 상대 F3 하강율", f"{ev['drop_pct']:.1f} %", delta=f"{int(ev['drop_hz'])} Hz")
             m3.metric("지속시간 비율", f"{ev['ratio']:.2f} 배")
             st.pyplot(plot_phonetics(ev['snd_t'], ev['snd_c'], ev['pf_t'], ev['pf_c'], ev['set']['target_display'], ev['set']['control_display']))
 
@@ -306,6 +368,9 @@ elif app_mode == "교수/연구자 관리자 모드":
             if df_all.empty:
                 st.info("수집된 학생 데이터가 없습니다.")
             else:
+                th_f, th_r = get_current_thresholds()
+                st.caption(f"⚙️ **현재 자동 수렴된 시스템 기준치:** F3 상대 하강율 ≥ **{th_f:.1f}%** | 지속시간비 ≥ **{th_r:.2f}배** (데이터 누적 시 자동 갱신)")
+                
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("총 발화 건수", f"{len(df_all)} 건")
                 m2.metric("참여 학생 수", f"{df_all['student_name'].nunique()} 명")
@@ -337,7 +402,6 @@ elif app_mode == "교수/연구자 관리자 모드":
                 st.markdown("---")
                 st.subheader("👤 참가자 1인 통합 상세 결과 열람")
                 
-                # 참가자 목록을 1인 단위로 그룹화
                 participants = df_all[['student_name', 'gender', 'age', 'hometown']].drop_duplicates()
                 part_list = []
                 for _, p_row in participants.iterrows():
@@ -351,7 +415,6 @@ elif app_mode == "교수/연구자 관리자 모드":
                     format_func=lambda x: [p[1] for p in part_list if p[0] == x][0]
                 )
 
-                # 선택한 참가자의 모든 과제 데이터 추출
                 user_records = df_all[df_all['student_name'] == chosen_name].sort_values(by="id", ascending=True)
                 first_r = user_records.iloc[0]
 
@@ -363,7 +426,6 @@ elif app_mode == "교수/연구자 관리자 모드":
                 </div>
                 """, unsafe_allow_html=True)
 
-                # 세트 1과 세트 2를 나란히 2개 컬럼으로 통합 표시
                 cols_task = st.columns(len(user_records))
                 for idx, (_, r_task) in enumerate(user_records.iterrows()):
                     with cols_task[idx]:
@@ -372,6 +434,7 @@ elif app_mode == "교수/연구자 관리자 모드":
                         is_eq = (perc in lbl)
                         badge_color = "#2E7D32" if is_eq else "#D97706"
                         badge_text = "일치" if is_eq else "불일치"
+                        pct_val = r_task['f3_drop_pct'] if pd.notnull(r_task['f3_drop_pct']) else 0.0
 
                         st.markdown(f"#### 📌 {r_task['set_name'].split(':')[0]}")
                         st.markdown(f"""
@@ -381,13 +444,12 @@ elif app_mode == "교수/연구자 관리자 모드":
                             <div style="font-size: 13px; color: #444; margin-top: 8px;">
                                 • 자각 발음: <b style="color: #000;">{perc}</b> 
                                 <span style="background: {badge_color}; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 4px;">{badge_text}</span><br>
-                                • F3 하강치: <b>{int(r_task['f3_drop'])} Hz</b><br>
+                                • 상대 F3 하강율: <b>{pct_val:.1f}%</b> ({int(r_task['f3_drop'])} Hz)<br>
                                 • 지속시간비: <b>{r_task['closure_ratio']:.2f}배</b>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
 
-                        # 음성 재생기
                         st.caption(f"🎧 '{r_task['target_display']}' 발화 음성")
                         if os.path.exists(r_task['audio_path_target']):
                             st.audio(r_task['audio_path_target'])
@@ -395,7 +457,6 @@ elif app_mode == "교수/연구자 관리자 모드":
                         if os.path.exists(r_task['audio_path_control']):
                             st.audio(r_task['audio_path_control'])
 
-                        # 스펙트로그램
                         if os.path.exists(r_task['audio_path_target']) and os.path.exists(r_task['audio_path_control']):
                             with st.expander(f"📈 '{r_task['target_display']}' 스펙트로그램 보기"):
                                 try:
@@ -426,5 +487,6 @@ elif app_mode == "교수/연구자 관리자 모드":
                     c.execute("DELETE FROM participant_results WHERE student_name = ?", (chosen_name,))
                     conn.commit()
                     conn.close()
+                    auto_calibrate_thresholds()
                     st.success(f"'{chosen_name}' 학생의 모든 데이터가 성공적으로 삭제되었습니다.")
                     st.rerun()
