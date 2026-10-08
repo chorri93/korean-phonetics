@@ -4,11 +4,16 @@ import parselmouth
 import whisper
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import sqlite3
 import pandas as pd
 import os
 import subprocess
 from datetime import datetime
+
+# Matplotlib 한글 폰트 설정 (리눅스 깨짐 방지)
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'NanumGothic', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
 
 st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", page_icon="🎙️", layout="wide")
 
@@ -47,8 +52,8 @@ def init_db():
         except: pass
 
     initial = [
-        ("세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡", "낙", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
-        ("세트 2: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟", "밥", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
+        ("세트 1: 어간 말 'ㄺ' 발음 조사 ('낡지' vs '낙지')", "신발이 너무 낡지 않았어?", "낙지가 너무 맛있지 않아?", "낡지", "낙지", "낡지", "낙지", "[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)", "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"),
+        ("세트 2: 어간 말 'ㄼ' 발음 조사 ('밟도록' vs '밥도둑')", "이 부분을 밟도록 해", "간장게장을 밥도둑이라고 해", "밟도록", "밥도둑", "밟도", "밥도", "[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)", "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음")
     ]
     for item in initial:
         c.execute("""INSERT OR IGNORE INTO stimulus_sets (set_name, sentence_target, sentence_control, target_keyword, control_keyword, target_display, control_display, cand_std, cand_alt, cand_hyper, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
@@ -117,25 +122,58 @@ def convert_and_save_audio(audio_bytes, out_path):
 def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
     convert_and_save_audio(audio_bytes, save_path)
     res = get_whisper().transcribe(save_path, word_timestamps=True, language="ko")
+    sound = parselmouth.Sound(save_path)
+    total_len = float(sound.get_total_duration())
+
     t_start, t_end = None, None
+    clean_kw = keyword.replace(" ", "").strip()
+    sub_kw = clean_kw[:2]  # '낡지' -> '낡지', '낡'
+
+    # Whisper 타임스탬프 탐색 (어절 일치 및 부분 일치)
     for seg in res.get("segments", []):
         for w in seg.get("words", []):
-            if keyword in w["word"].replace(" ", "").strip():
+            w_text = w["word"].replace(" ", "").strip()
+            if (clean_kw in w_text) or (sub_kw in w_text):
                 t_start = float(w["start"])
                 t_end = float(w["end"])
                 break
         if t_start is not None:
             break
-    sound = parselmouth.Sound(save_path)
-    total_len = float(sound.get_total_duration())
-    if t_start is None or t_end is None:
-        return sound, 0.0, total_len
-    scale = 0.68 if is_three else 1.0
-    t_end = t_start + (t_end - t_start) * scale
-    p_start = max(0.0, t_start - 0.03)
-    p_end = min(total_len, t_end + 0.03)
+
+    # 1차 보정: 단어 길이가 너무 길거나(문장 오인식) 너무 짧은 경우 방어
+    is_valid_range = False
+    if t_start is not None and t_end is not None:
+        seg_dur = t_end - t_start
+        if 0.18 <= seg_dur <= 0.95:
+            is_valid_range = True
+
+    # 2차 비상 방어: 단어를 못 찾았거나 범위가 비정상일 때 문장 발화 중심부 강제 정밀 크롭
+    if not is_valid_range:
+        # 문장 전체에서 발화가 일어나는 중심 에너지 위치 추정
+        # '신발이 너무 낡지 않았어?'에서 '낡지'는 대략 35% ~ 55% 지점
+        # '낙지가 너무 맛있지 않아?'에서 '낙지'는 대략 0% ~ 30% 지점
+        if "낡" in keyword:
+            t_start = max(0.2, total_len * 0.35)
+            t_end = min(total_len - 0.2, t_start + 0.42)
+        elif "낙" in keyword:
+            t_start = max(0.1, total_len * 0.08)
+            t_end = min(total_len - 0.2, t_start + 0.42)
+        elif "밟" in keyword:
+            t_start = max(0.2, total_len * 0.32)
+            t_end = min(total_len - 0.2, t_start + 0.45)
+        else: # 밥도둑
+            t_start = max(0.2, total_len * 0.30)
+            t_end = min(total_len - 0.2, t_start + 0.45)
+
+    # 3음절 단어('밟도록', '밥도둑')는 앞 2음절('밟도', '밥도')로 축소
+    if is_three:
+        diff = t_end - t_start
+        t_end = t_start + diff * 0.68
+
+    p_start = max(0.0, t_start - 0.02)
+    p_end = min(total_len, t_end + 0.02)
     part = sound.extract_part(from_time=p_start, to_time=p_end, preserve_times=False)
-    return part, t_start, t_end
+    return part, p_start, p_end
 
 def compute_phonetic_metrics(sound, gender="남성"):
     max_f = 5000.0 if gender == "남성" else 5500.0
@@ -148,7 +186,8 @@ def compute_phonetic_metrics(sound, gender="남성"):
         f3_vals.append(formants.get_value_at_time(3, t))
         
     dur = float(sound.get_total_duration())
-    t1, t2 = dur * 0.4, dur * 0.85
+    # 단어 모음 말단부(폐쇄 직전 45% ~ 80% 구간)에 집중하여 포먼트 추출
+    t1, t2 = dur * 0.45, dur * 0.82
     offset_f3 = []
     for t in times:
         if t1 <= t <= t2:
@@ -171,34 +210,41 @@ def classify_pronunciation_adaptive(d_t, d_c, s_info):
     
     if (drop_pct >= th_f3_rel and ratio >= th_ratio) or (drop_pct >= th_f3_rel * 1.6):
         verdict = s_info["cand_hyper"]
-        desc = f"화자의 대조군 대비 모음 말단 F3 하강률이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 잔여 성분이 명확하여 '이중조음형'으로 판정되었습니다."
+        desc = f"모음 말단 F3 상대 하강율이 {drop_pct:.1f}%(기준: {th_f3_rel:.1f}%)로 유음화 조음 제스처가 잔류하여 '이중조음형'으로 판정되었습니다."
     elif drop_pct >= th_f3_rel * 2.5 and ratio < th_ratio:
         verdict = s_info["cand_alt"]
-        desc = "폐쇄음이 현저히 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
+        desc = "폐쇄음이 약화되고 유음 성분이 지배적이어서 '[ㄹ] 선택형 단순화'로 판정되었습니다."
     else:
         verdict = s_info["cand_std"]
-        desc = f"대조군 대비 F3 하강률({drop_pct:.1f}%)이 화자의 정상 조음 변이 범위 내에 있어 단일 폐쇄음 규범 단순화로 판정되었습니다."
+        desc = f"대조군 대비 F3 변동폭({drop_pct:.1f}%)이 화자의 정상 조음 범위 내에 있어 단일 폐쇄음 규범 단순화로 판정되었습니다."
         
     return verdict, drop_hz, drop_pct, ratio, desc
 
 def plot_phonetics(snd_t, snd_c, pf_t, pf_c, w_t, w_c):
     fig, axes = plt.subplots(2, 2, figsize=(14, 6.5), sharey="row")
     sg_t, sg_c = pf_t["spectrogram"], pf_c["spectrogram"]
+    
     axes[0, 0].pcolormesh(sg_t.x_grid(), sg_t.y_grid(), 10 * np.log10(sg_t.values), cmap="viridis", shading="auto")
     axes[0, 0].plot(pf_t["times"], pf_t["f3"], color="red", linewidth=2.5, label="F3 Track")
-    axes[0, 0].set_title(f"A. 표적 어절: '{w_t}'")
+    axes[0, 0].set_title(f"Target: '{w_t}' Spectrogram", fontsize=12, fontweight='bold')
     axes[0, 0].set_ylim(0, 4500)
     axes[0, 0].set_ylabel("Frequency (Hz)")
     axes[0, 0].legend(loc="upper right")
+    
     axes[0, 1].pcolormesh(sg_c.x_grid(), sg_c.y_grid(), 10 * np.log10(sg_c.values), cmap="viridis", shading="auto")
     axes[0, 1].plot(pf_c["times"], pf_c["f3"], color="red", linewidth=2.5, label="F3 Track")
-    axes[0, 1].set_title(f"B. 대조 어절: '{w_c}'")
+    axes[0, 1].set_title(f"Control: '{w_c}' Spectrogram", fontsize=12, fontweight='bold')
     axes[0, 1].set_ylim(0, 4500)
     axes[0, 1].legend(loc="upper right")
+    
     axes[1, 0].plot(snd_t.xs(), snd_t.values.T, color="#333")
-    axes[1, 0].set_title(f"'{w_t}' 파형 ({pf_t['duration']:.2f}s)")
+    axes[1, 0].set_title(f"'{w_t}' Waveform ({pf_t['duration']:.2f}s)", fontsize=11)
+    axes[1, 0].set_xlabel("Time (s)")
+    
     axes[1, 1].plot(snd_c.xs(), snd_c.values.T, color="#005588")
-    axes[1, 1].set_title(f"'{w_c}' 파형 ({pf_c['duration']:.2f}s)")
+    axes[1, 1].set_title(f"'{w_c}' Waveform ({pf_c['duration']:.2f}s)", fontsize=11)
+    axes[1, 1].set_xlabel("Time (s)")
+    
     plt.tight_layout()
     return fig
 
@@ -263,7 +309,7 @@ if app_mode == "학생 발음 실험 참여":
             if not st_name.strip():
                 st.error("⚠️ 상단 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key=f"btn_eval_{step_idx}", use_container_width=True):
-                with st.spinner("단어 정렬 및 음향 지표 산출 중..."):
+                with st.spinner("표적 어절 핀셋 추출 및 음향 지표 정밀 산출 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     pt = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['target_display']}_{stamp}.wav")
                     pc = os.path.join(AUDIO_DIR, f"{st_name}_{cur_set['control_display']}_{stamp}.wav")
@@ -282,7 +328,6 @@ if app_mode == "학생 발음 실험 참여":
                     conn.commit()
                     conn.close()
 
-                    # 피드백 기반 자동 임계값 보정 실행
                     auto_calibrate_thresholds()
 
                     st.session_state[f"eval_{step_idx}"] = {
