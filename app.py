@@ -10,7 +10,6 @@ import os
 import subprocess
 from datetime import datetime
 
-# Matplotlib 기본 설정 (리눅스 깨짐 방지)
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'NanumGothic', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -39,31 +38,18 @@ def init_db():
         set_name TEXT, target_display TEXT, control_display TEXT, f3_drop REAL, f3_drop_pct REAL, duration_target REAL, duration_control REAL,
         closure_ratio REAL, classified_label TEXT, perceived_label TEXT, expert_label TEXT, audio_path_target TEXT, audio_path_control TEXT)""")
         
-    c.execute("""CREATE TABLE IF NOT EXISTS system_thresholds (
-        id INTEGER PRIMARY KEY,
-        th_f3_rel REAL,
-        th_ratio REAL,
-        updated_at TEXT)""")
-        
+    c.execute("""CREATE TABLE IF NOT EXISTS system_thresholds (id INTEGER PRIMARY KEY, th_f3_rel REAL, th_ratio REAL, updated_at TEXT)""")
     c.execute("INSERT OR IGNORE INTO system_thresholds (id, th_f3_rel, th_ratio, updated_at) VALUES (1, 1.8, 1.02, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
     c.execute("PRAGMA table_info(participant_results)")
-    cols = [row[1] for row in c.fetchall()]
-    if "perceived_label" not in cols:
-        try: c.execute("ALTER TABLE participant_results ADD COLUMN perceived_label TEXT")
-        except: pass
-    if "f3_drop_pct" not in cols:
-        try: c.execute("ALTER TABLE participant_results ADD COLUMN f3_drop_pct REAL")
-        except: pass
-    if "expert_label" not in cols:
-        try: c.execute("ALTER TABLE participant_results ADD COLUMN expert_label TEXT")
-        except: pass
+    cols = [r[1] for r in c.fetchall()]
+    for col_name in ["perceived_label", "f3_drop_pct", "expert_label"]:
+        if col_name not in cols:
+            try: c.execute("ALTER TABLE participant_results ADD COLUMN " + col_name + " TEXT")
+            except: pass
 
-    # 안전한 INSERT OR REPLACE (DELETE 구문 제거로 빈 화면 버그 해결)
     for item in DEFAULT_SETS:
-        c.execute("""INSERT OR REPLACE INTO stimulus_sets 
-        (id, set_name, sentence_target, sentence_control, target_keyword, control_keyword, target_display, control_display, cand_std, cand_alt, cand_hyper, description) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
+        c.execute("""INSERT OR REPLACE INTO stimulus_sets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", item)
     conn.commit()
     conn.close()
 
@@ -75,53 +61,30 @@ def get_current_thresholds():
     c.execute("SELECT th_f3_rel, th_ratio FROM system_thresholds WHERE id = 1")
     row = c.fetchone()
     conn.close()
-    if row:
-        return float(row[0]), float(row[1])
-    return 1.8, 1.02
+    return (float(row[0]), float(row[1])) if row else (1.8, 1.02)
 
 def auto_calibrate_thresholds():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT set_name, f3_drop_pct, closure_ratio, perceived_label, expert_label FROM participant_results WHERE f3_drop_pct IS NOT NULL", conn)
     conn.close()
-    
-    if len(df) < 4:
-        return
-        
-    best_acc = -1.0
-    best_th_f3 = 1.8
-    best_th_ratio = 1.02
-    
-    cand_f3 = [0.8, 1.2, 1.5, 1.8, 2.2, 2.8]
-    cand_ratio = [0.98, 1.01, 1.03, 1.05]
-    
-    for tf in cand_f3:
-        for tr in cand_ratio:
-            matches = 0
-            valid_cnt = 0
+    if len(df) < 4: return
+    best_acc, best_tf, best_tr = -1.0, 1.8, 1.02
+    for tf in [0.8, 1.2, 1.5, 1.8, 2.2]:
+        for tr in [0.98, 1.01, 1.03, 1.05]:
+            matches, vcnt = 0, 0
             for _, r in df.iterrows():
-                target_ans = r['expert_label'] if pd.notnull(r['expert_label']) and r['expert_label'] != "" else r['perceived_label']
-                if pd.isnull(target_ans) or target_ans == "":
-                    continue
-                valid_cnt += 1
-                is_set_bilab = ("밟" in str(r['set_name']))
-                if is_set_bilab:
-                    is_hyper = (r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 0.4)
-                else:
-                    is_hyper = (r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or (r['f3_drop_pct'] >= tf * 1.5)
-                    
-                is_hyper_ans = ("낡" in str(target_ans) or "밟" in str(target_ans))
-                if is_hyper == is_hyper_ans:
-                    matches += 1
-            if valid_cnt > 0:
-                acc = matches / valid_cnt
-                if acc > best_acc:
-                    best_acc = acc
-                    best_th_f3 = tf
-                    best_th_ratio = tr
-                
+                ans = r['expert_label'] if pd.notnull(r['expert_label']) and r['expert_label'] != "" else r['perceived_label']
+                if pd.isnull(ans) or ans == "": continue
+                vcnt += 1
+                is_b = ("밟" in str(r['set_name']))
+                is_hyp = (r['closure_ratio'] >= tr or r['f3_drop_pct'] >= tf * 0.4) if is_b else ((r['f3_drop_pct'] >= tf and r['closure_ratio'] >= tr) or r['f3_drop_pct'] >= tf * 1.5)
+                if is_hyp == ("낡" in str(ans) or "밟" in str(ans)): matches += 1
+            if vcnt > 0 and (matches / vcnt) > best_acc:
+                best_acc = matches / vcnt
+                best_tf, best_tr = tf, tr
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE system_thresholds SET th_f3_rel = ?, th_ratio = ?, updated_at = ? WHERE id = 1", (best_th_f3, best_th_ratio, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute("UPDATE system_thresholds SET th_f3_rel = ?, th_ratio = ?, updated_at = ? WHERE id = 1", (best_tf, best_tr, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
 
@@ -131,14 +94,46 @@ def get_whisper():
 
 def convert_and_save_audio(audio_bytes, out_path):
     temp = out_path + ".temp"
-    with open(temp, "wb") as f:
-        f.write(audio_bytes)
+    with open(temp, "wb") as f: f.write(audio_bytes)
     subprocess.run(["ffmpeg", "-y", "-i", temp, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if os.path.exists(temp):
-        os.remove(temp)
+    if os.path.exists(temp): os.remove(temp)
 
 def extract_aligned_audio(audio_bytes, keyword, save_path, is_three=False):
     convert_and_save_audio(audio_bytes, save_path)
     res = get_whisper().transcribe(save_path, word_timestamps=True, language="ko")
     sound = parselmouth.Sound(save_path)
-    total_len = float(sound.get_
+    total_d = sound.get_total_duration()
+
+    t_start, t_end = None, None
+    ckw = keyword.replace(" ", "").strip()
+    skw = ckw[:2]
+
+    for seg in res.get("segments", []):
+        for w in seg.get("words", []):
+            wt = w["word"].replace(" ", "").strip()
+            if (ckw in wt) or (skw in wt):
+                t_start = float(w["start"])
+                t_end = float(w["end"])
+                break
+        if t_start is not None: break
+
+    valid = (t_start is not None and t_end is not None and 0.18 <= (t_end - t_start) <= 0.95)
+    if not valid:
+        if "낡" in keyword: t_start, t_end = total_d * 0.35, total_d * 0.35 + 0.42
+        elif "낙" in keyword: t_start, t_end = total_d * 0.08, total_d * 0.08 + 0.42
+        elif "밟도" in keyword: t_start, t_end = total_d * 0.32, total_d * 0.32 + 0.45
+        elif "밟지" in keyword: t_start, t_end = total_d * 0.38, total_d * 0.38 + 0.42
+        elif "밥지" in keyword: t_start, t_end = total_d * 0.42, total_d * 0.42 + 0.42
+        else: t_start, t_end = total_d * 0.30, total_d * 0.30 + 0.45
+
+    if is_three:
+        t_end = t_start + (t_end - t_start) * 0.68
+
+    p_s = max(0.0, t_start - 0.02)
+    p_e = min(total_d, t_end + 0.02)
+    part = sound.extract_part(from_time=p_s, to_time=p_e, preserve_times=False)
+    return part, p_s, p_e
+
+def compute_phonetic_metrics(sound, gender="남성"):
+    max_f = 5000.0 if gender == "남성" else 5500.0
+    formants = sound.to_formant_burg(max_number_of_formants=5.0, maximum_formant=max_f
