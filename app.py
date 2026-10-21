@@ -1,8 +1,12 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 import parselmouth, whisper, numpy as np, matplotlib.pyplot as plt
-import sqlite3, pandas as pd, os, subprocess
+import pandas as pd, os, subprocess
 from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'NanumGothic', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
@@ -10,23 +14,56 @@ st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", 
 
 AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
-DB_PATH = "phonetics_research.db"
+
+# Google Drive & Sheets 인증 연결
+@st.cache_resource
+def get_gcp_clients():
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    scopes = [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets"
+    ]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    drive_service = build('drive', 'v3', credentials=creds)
+    gc = gspread.authorize(creds)
+    sheet = gc.open_by_key(st.secrets["storage"]["SHEET_ID"]).sheet1
+    return drive_service, sheet
+
+def upload_to_drive(file_path, file_name):
+    try:
+        drive_service, _ = get_gcp_clients()
+        folder_id = st.secrets["storage"]["DRIVE_FOLDER_ID"]
+        media = MediaFileUpload(file_path, mimetype='audio/wav', resumable=True)
+        file_metadata = {
+            'name': file_name,
+            'parents': [folder_id]
+        }
+        f = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        return f.get('webViewLink', '')
+    except Exception:
+        return ""
+
+def append_to_sheet(row_data):
+    try:
+        _, sheet = get_gcp_clients()
+        sheet.append_row(row_data)
+        return True
+    except Exception:
+        return False
+
+def get_sheet_data():
+    try:
+        _, sheet = get_gcp_clients()
+        records = sheet.get_all_records()
+        return pd.DataFrame(records)
+    except Exception:
+        return pd.DataFrame()
 
 SETS = [
     {"id": 1, "title": "과제 1: '낡지' vs '낙지'", "s_t": "신발이 너무 낡지 않았어?", "s_c": "낙지가 너무 맛있지 않아?", "kw_t": "낡지", "kw_c": "낙지", "disp_t": "낡지", "disp_c": "낙지", "cand": ["[낙찌] (표준: ㄱ단순화)", "[날찌] (비표준: ㄹ단순화)", "[낡찌] (과도교정: 이중조음)"], "rule": "표준어 규정 제11항: 어간 말 'ㄺ'은 자음 앞에서 [ㄱ]으로 발음"},
     {"id": 2, "title": "과제 2: '밟지' vs '밥지리'", "s_t": "내 발 좀 밟지 마.", "s_c": "벙어리를 밥지리라고도 한다.", "kw_t": "밟지", "kw_c": "밥지리", "disp_t": "밟지", "disp_c": "밥지", "cand": ["[밥찌] (표준: ㅂ단순화)", "[발찌] (일반화 오류: ㄹ단순화)", "[밟찌] (과도교정: 이중조음)"], "rule": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"},
     {"id": 3, "title": "과제 3: '밟도록' vs '밥도둑'", "s_t": "이 부분을 밟도록 해", "s_c": "간장게장을 밥도둑이라고 해", "kw_t": "밟도록", "kw_c": "밥도둑", "disp_t": "밟도", "disp_c": "밥도", "cand": ["[밥또록] (표준: ㅂ단순화)", "[발또록] (일반화 오류: ㄹ단순화)", "[밟또록] (과도교정: 이중조음)"], "rule": "표준어 규정 제10항 단서: 어간 '밟-'은 자음 앞에서 예외적으로 [ㅂ]으로 발음"}
 ]
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.cursor().execute("""CREATE TABLE IF NOT EXISTS results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, name TEXT, gender TEXT, age INTEGER, region TEXT,
-        task_id INTEGER, target_word TEXT, drop_pct REAL, ratio REAL, classified TEXT, perceived TEXT, expert TEXT, path_t TEXT, path_c TEXT)""")
-    conn.commit()
-    conn.close()
-
-init_db()
 
 @st.cache_resource
 def get_whisper():
@@ -186,22 +223,31 @@ if mode == "학생 발음 실험 참여":
             if not name.strip():
                 st.error("⚠️ 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key="run_" + str(step), type="primary", use_container_width=True):
-                with st.spinner("스펙트로그램 분석 중..."):
+                with st.spinner("스펙트로그램 분석 및 클라우드 영구 저장 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    pt = os.path.join(AUDIO_DIR, name + "_" + task['disp_t'] + "_" + stamp + ".wav")
-                    pc = os.path.join(AUDIO_DIR, name + "_" + task['disp_c'] + "_" + stamp + ".wav")
+                    fn_t = name + "_" + task['disp_t'] + "_" + stamp + ".wav"
+                    fn_c = name + "_" + task['disp_c'] + "_" + stamp + ".wav"
+                    pt = os.path.join(AUDIO_DIR, fn_t)
+                    pc = os.path.join(AUDIO_DIR, fn_c)
 
                     s_t = slice_word(st.session_state[kt], task["kw_t"], pt, (task["id"] == 3))
                     s_c = slice_word(st.session_state[kc], task["kw_c"], pc, (task["id"] == 3))
                     m_t, m_c = get_metrics(s_t, gender), get_metrics(s_c, gender)
                     verdict, drop_pct, ratio, exp = classify(m_t, m_c, task)
 
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.cursor().execute("""INSERT INTO results (created_at, name, gender, age, region, task_id, target_word, drop_pct, ratio, classified, perceived, expert, path_t, path_c)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), name.strip(), gender, age, region, task["id"], task["disp_t"], drop_pct, ratio, verdict, u_perc, None, pt, pc))
-                    conn.commit()
-                    conn.close()
+                    # Google Drive에 오디오 파일 영구 업로드
+                    url_t = upload_to_drive(pt, fn_t)
+                    url_c = upload_to_drive(pc, fn_c)
+
+                    # Google Sheets에 수치 및 링크 영구 기록
+                    row_data = [
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        name.strip(), gender, int(age), region,
+                        int(task["id"]), task["disp_t"],
+                        round(float(drop_pct), 2), round(float(ratio), 2),
+                        verdict, u_perc, "", url_t, url_c
+                    ]
+                    append_to_sheet(row_data)
 
                     st.session_state["res_" + str(step)] = {"verdict": verdict, "drop_pct": drop_pct, "ratio": ratio, "exp": exp, "perc": u_perc, "m_t": m_t, "m_c": m_c, "task": task}
 
@@ -236,7 +282,7 @@ if mode == "학생 발음 실험 참여":
             st.rerun()
 
 elif mode == "교수/연구자 관리자 모드":
-    st.title("🔒 국어음운론 연구 관리자 시스템")
+    st.title("🔒 국어음운론 연구 관리자 시스템 (Cloud 연동)")
     if "admin" not in st.session_state:
         st.session_state.admin = False
     if not st.session_state.admin:
@@ -252,30 +298,25 @@ elif mode == "교수/연구자 관리자 모드":
             st.session_state.admin = False
             st.rerun()
 
-        t1, t2 = st.tabs(["📊 통계 분석", "🎧 참가자별 청취 판독"])
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT * FROM results ORDER BY id DESC", conn)
-        conn.close()
+        t1, t2 = st.tabs(["📊 통계 분석", "🎧 참가자별 클라우드 데이터 확인"])
+        df = get_sheet_data()
 
         with t1:
             if df.empty:
-                st.info("수집된 데이터가 없습니다.")
+                st.info("Google Sheets에 수집된 데이터가 없습니다.")
             else:
                 m1, m2, m3 = st.columns(3)
                 m1.metric("총 발화 수", str(len(df)) + " 건")
                 m2.metric("참여자 수", str(df['name'].nunique()) + " 명")
-                ed = df['expert'].notnull().sum()
+                ed = (df['expert'] != "").sum() if 'expert' in df.columns else 0
                 m3.metric("연구자 판정 완료", str(ed) + " / " + str(len(df)) + " 건")
 
                 st.write("▼ **학생 자각 발음 분포**")
                 st.bar_chart(df['perceived'].value_counts())
-                if ed > 0:
-                    st.write("▼ **학생 자각(행) × 연구자 판단(열) 교차표**")
-                    st.dataframe(pd.crosstab(df['perceived'], df['expert'], margins=True), use_container_width=True)
 
         with t2:
             if df.empty:
-                st.info("수집된 데이터가 없습니다.")
+                st.info("Google Sheets에 수집된 데이터가 없습니다.")
             else:
                 st.download_button("💾 전체 CSV 다운로드", df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), "corpus.csv", "text/csv")
                 names = df['name'].unique().tolist()
@@ -285,103 +326,16 @@ elif mode == "교수/연구자 관리자 모드":
                 for _, row in u_df.iterrows():
                     task_idx = int(row['task_id']) - 1
                     t_info = SETS[task_idx]
-                    cand_opts = t_info["cand"]
-
+                    
                     st.markdown("---")
-                    st.subheader(f"📌 {t_info['title']}")
+                    st.markdown("### 📌 " + t_info["title"])
+                    st.write("• 발화 일시: " + str(row['created_at']))
+                    st.write("• 기계 판정: **" + str(row['classified']) + "** | 학생 자각: **" + str(row['perceived']) + "**")
 
-                    # 대조 문장 및 자극 문장 안내 박스
-                    c_sent1, c_sent2 = st.columns(2)
-                    with c_sent1:
-                        st.markdown(f"**🗣️ 문장 1 (표적: '{t_info['disp_t']}'):**")
-                        st.warning(f"**{t_info['s_t']}**")
-                    with c_sent2:
-                        st.markdown(f"**🗣️ 문장 2 (대조: '{t_info['disp_c']}'):**")
-                        st.info(f"**{t_info['s_c']}**")
-
-                    # 음향 판정 & 자각 발음 & 연구자 확정 요약
-                    p_col1, p_col2, p_col3 = st.columns(3)
-                    with p_col1:
-                        st.write("• **기계 판정:** " + str(row['classified']))
-                    with p_col2:
-                        st.write("• **학생 자각:** " + str(row['perceived']))
-                    with p_col3:
-                        if row['expert'] and str(row['expert']) != "None":
-                            st.success("👑 **연구자 확정:** " + str(row['expert']))
-                        else:
-                            st.caption("연구자 미판정 상태")
-
-                    # 음성 파일 재생 (표적음 vs 대조음)
-                    a_col1, a_col2 = st.columns(2)
-                    has_t = os.path.exists(str(row['path_t']))
-                    has_c = os.path.exists(str(row['path_c']))
-
-                    with a_col1:
-                        if has_t:
-                            st.caption(f"🎧 표적 발화 음성 ('{t_info['disp_t']}'):")
-                            st.audio(row['path_t'])
-                        else:
-                            st.caption("표적 음성 파일 없음")
-                    with a_col2:
-                        if has_c:
-                            st.caption(f"🎧 대조군 발화 음성 ('{t_info['disp_c']}'):")
-                            st.audio(row['path_c'])
-                        else:
-                            st.caption("대조군 음성 파일 없음")
-
-                    # 스펙트로그램 비교 시각화 (Expander)
-                    with st.expander("🔍 스펙트로그램 및 포먼트 궤적 비교 열기"):
-                        if has_t and has_c:
-                            try:
-                                snd_t = parselmouth.Sound(str(row['path_t']))
-                                snd_c = parselmouth.Sound(str(row['path_c']))
-                                g_val = str(row['gender']) if 'gender' in row else "남성"
-                                pf_t = get_metrics(snd_t, g_val)
-                                pf_c = get_metrics(snd_c, g_val)
-                                st.pyplot(plot_spec(pf_t, pf_c, t_info['disp_t'], t_info['disp_c']))
-                            except Exception as e:
-                                st.caption("스펙트로그램 생성 중 오류: " + str(e))
-                        else:
-                            st.info("음성 파일이 존재하지 않아 스펙트로그램을 표시할 수 없습니다.")
-
-                    # 연구자 판정 입력
-                    def_i = 0
-                    for idx_c, c_text in enumerate(cand_opts):
-                        if row['expert'] and row['expert'].split(" ")[0] in c_text:
-                            def_i = idx_c
-                            break
-
-                    ch_col, btn_col = st.columns([3, 1])
-                    with ch_col:
-                        chosen_e = st.selectbox("연구자 판정 선택", cand_opts, index=def_i, key="sel_" + str(row['id']))
-                    with btn_col:
-                        st.write("")
-                        st.write("")
-                        if st.button("💾 판독 저장", key="btn_" + str(row['id']), use_container_width=True):
-                            conn = sqlite3.connect(DB_PATH)
-                            conn.cursor().execute("UPDATE results SET expert = ? WHERE id = ?", (chosen_e, row['id']))
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
-
-                st.markdown("---")
-                del_btn_key = "btn_del_" + str(c_name)
-                if st.button("🚨 '" + str(c_name) + "' 참가자 데이터 영구 삭제", key=del_btn_key, type="primary"):
-                    for _, d_row in u_df.iterrows():
-                        if os.path.exists(str(d_row['path_t'])):
-                            try:
-                                os.remove(str(d_row['path_t']))
-                            except:
-                                pass
-                        if os.path.exists(str(d_row['path_c'])):
-                            try:
-                                os.remove(str(d_row['path_c']))
-                            except:
-                                pass
-
-                    conn = sqlite3.connect(DB_PATH)
-                    c = conn.cursor()
-                    c.execute("DELETE FROM results WHERE name = ?", (str(c_name),))
-                    conn.commit()
-                    conn.close()
-                    st.rerun()
+                    col_u1, col_u2 = st.columns(2)
+                    with col_u1:
+                        if row.get('url_t'):
+                            st.markdown("🔗 [Google Drive에서 표적 발화 듣기](" + str(row['url_t']) + ")")
+                    with col_u2:
+                        if row.get('url_c'):
+                            st.markdown("🔗 [Google Drive에서 대조 발화 듣기](" + str(row['url_c']) + ")")
