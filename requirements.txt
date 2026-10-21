@@ -6,3 +6,6 @@ numpy<2.0.0
 matplotlib>=3.8.0
 pandas>=2.0.0
 scipy>=1.11.0
+google-api-python-client
+google-auth
+gspread
