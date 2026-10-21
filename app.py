@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 import parselmouth, whisper, numpy as np, matplotlib.pyplot as plt
-import pandas as pd, os, subprocess, socket
+import pandas as pd, os, subprocess, socket, json
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -18,10 +18,21 @@ st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", 
 AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Google Drive & Sheets 인증 연결
+# Google Drive & Sheets 인증 연결 (PEM 줄바꿈 완벽 정규화)
 @st.cache_resource
 def get_gcp_clients():
-    creds_dict = dict(st.secrets["gcp_service_account"])
+    if "gcp" in st.secrets and "service_account_json" in st.secrets["gcp"]:
+        creds_dict = json.loads(st.secrets["gcp"]["service_account_json"])
+    else:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+
+    # PEM 형식 정규화 처리 (줄바꿈 오류 완전 방지)
+    if "private_key" in creds_dict:
+        pk = creds_dict["private_key"]
+        pk = pk.replace("\\n", "\n")
+        lines = [line.strip() for line in pk.split("\n") if line.strip()]
+        creds_dict["private_key"] = "\n".join(lines) + "\n"
+
     scopes = [
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/spreadsheets"
