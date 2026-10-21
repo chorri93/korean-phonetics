@@ -1,12 +1,15 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 import parselmouth, whisper, numpy as np, matplotlib.pyplot as plt
-import pandas as pd, os, subprocess
+import pandas as pd, os, subprocess, threading, socket
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+# 구글 API 통신 타임아웃 10초 설정 (무한 대기 방지)
+socket.setdefaulttimeout(10.0)
 
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'NanumGothic', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
@@ -29,27 +32,39 @@ def get_gcp_clients():
     sheet = gc.open_by_key(st.secrets["storage"]["SHEET_ID"]).sheet1
     return drive_service, sheet
 
-def upload_to_drive(file_path, file_name):
+def _async_cloud_save(pt, fn_t, pc, fn_c, row_base):
+    """백그라운드 스레드에서 구글 드라이브 업로드 및 시트 저장을 안전하게 비동기 처리"""
     try:
-        drive_service, _ = get_gcp_clients()
+        drive_service, sheet = get_gcp_clients()
         folder_id = st.secrets["storage"]["DRIVE_FOLDER_ID"]
-        media = MediaFileUpload(file_path, mimetype='audio/wav', resumable=True)
-        file_metadata = {
-            'name': file_name,
-            'parents': [folder_id]
-        }
-        f = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        return f.get('webViewLink', '')
-    except Exception:
-        return ""
 
-def append_to_sheet(row_data):
-    try:
-        _, sheet = get_gcp_clients()
+        # 1. 표적 음원 업로드 (단순 비분할 전송)
+        url_t = ""
+        if os.path.exists(pt):
+            media_t = MediaFileUpload(pt, mimetype='audio/wav', resumable=False)
+            f_t = drive_service.files().create(
+                body={'name': fn_t, 'parents': [folder_id]},
+                media_body=media_t,
+                fields='webViewLink'
+            ).execute()
+            url_t = f_t.get('webViewLink', '')
+
+        # 2. 대조 음원 업로드 (단순 비분할 전송)
+        url_c = ""
+        if os.path.exists(pc):
+            media_c = MediaFileUpload(pc, mimetype='audio/wav', resumable=False)
+            f_c = drive_service.files().create(
+                body={'name': fn_c, 'parents': [folder_id]},
+                media_body=media_c,
+                fields='webViewLink'
+            ).execute()
+            url_c = f_c.get('webViewLink', '')
+
+        # 3. 구글 시트 행 추가
+        row_data = row_base + [url_t, url_c]
         sheet.append_row(row_data)
-        return True
     except Exception:
-        return False
+        pass
 
 def get_sheet_data():
     try:
@@ -223,7 +238,7 @@ if mode == "학생 발음 실험 참여":
             if not name.strip():
                 st.error("⚠️ 1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key="run_" + str(step), type="primary", use_container_width=True):
-                with st.spinner("스펙트로그램 분석 및 클라우드 영구 저장 중..."):
+                with st.spinner("스펙트로그램 분석 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     fn_t = name + "_" + task['disp_t'] + "_" + stamp + ".wav"
                     fn_c = name + "_" + task['disp_c'] + "_" + stamp + ".wav"
@@ -235,19 +250,19 @@ if mode == "학생 발음 실험 참여":
                     m_t, m_c = get_metrics(s_t, gender), get_metrics(s_c, gender)
                     verdict, drop_pct, ratio, exp = classify(m_t, m_c, task)
 
-                    # Google Drive에 오디오 파일 영구 업로드
-                    url_t = upload_to_drive(pt, fn_t)
-                    url_c = upload_to_drive(pc, fn_c)
-
-                    # Google Sheets에 수치 및 링크 영구 기록
-                    row_data = [
+                    # 백그라운드 스레드로 비동기 클라우드 영구 저장 (화면 지연 0초)
+                    row_base = [
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         name.strip(), gender, int(age), region,
                         int(task["id"]), task["disp_t"],
                         round(float(drop_pct), 2), round(float(ratio), 2),
-                        verdict, u_perc, "", url_t, url_c
+                        verdict, u_perc, ""
                     ]
-                    append_to_sheet(row_data)
+                    threading.Thread(
+                        target=_async_cloud_save,
+                        args=(pt, fn_t, pc, fn_c, row_base),
+                        daemon=True
+                    ).start()
 
                     st.session_state["res_" + str(step)] = {"verdict": verdict, "drop_pct": drop_pct, "ratio": ratio, "exp": exp, "perc": u_perc, "m_t": m_t, "m_c": m_c, "task": task}
 
