@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "phonetics-storage",
+  "private_key_id": "8f17725c282e1edd67813bec55e2ebdbeb8c76a2",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDRY0WW/g88SWEt\nkT+wiAHpP+Dd4BbkMllN+XokuNivTQg0IXlGbVuKVMkopojJsLOuW4Zpv+UDpkAX\np1NgzOoHJRXWNDiI2fURkhRpCJ9tjDcpfQUt8rO2xEzxqAr/59ULCNzo7wo1SgLC\nc+IosYidfVYKfTh2paVjGxhK3pCpLRMTdVDl+JMMTQKfZJSlgMK7neGZcJ9uhLF9\nYb+af5vsmMqTLfix5Yy88+Lnml4Cj4OFHWY47vBZOGWUo5CjAC5r/WXai1oZpaod\nK9iSmKJXZG8y/t7KZwXNKDOt2NmDMgSev0vVoIkPgu68phhGjl8SFieliMlYD0Fu\ni6Pki6R3AgMBAAECggEAImcaUiPdvUzcg8qiJBnsn8ty4bGbFpTz2bJm8Ff9+NYs\nxg1GlPI3K07L8FBlwtG0Fq6LXUj9/UVYXCqOB1ETwJHGI+LXnnCalJpOR9r2qt6c\nr5s5ec0EhxUmA+yAG39r9btX5IkQlySDuI78C9iY4YYW2B6ujhv1mlzOIdBYr1rf\n/sCdGTRN4gDrU5XzHRXv/rGOE0i9QYfH6WwDgzxZ8Bd+rvToy8JAs8VCLfdVgqGZ\nwSfzAsnj97YiMzOz+SQGaGduOpijGCnFbEtDIGXOyqmFOt4VQ39hbN6Huw9g7Yd5\ncYoz9hhzGT8esLp3DRy3ySm/v1cC8oZ5TYPKu8pF1QKBgQD9we1puKy/CYKe4y5Z\nGDKRop087tsht9DlNf/UGhdgTSLyQ+SMhg7RG8J/425yqj4NOhIdoBI62tUnkvMN\nzMiFWjh2n0KfgzfGPam55+WAW2eEO/fAwgDWmnv9szTAsOt2PHKSJsCqAoxSIvpW\nHRuPL8WoQgx5HqWHy6+EyWthlQKBgQDTPPegge+PqOdi+3MPFr2f/qa3uLLS60lm\nhOORX9jkaVHGxOzDZ2OK2Qc+YeHn5gUEkc/e/jUSnrj5p6JKLYuTTC/llyLbAURm\nzDsNPoPvkzzq3FJTKrvqxuFPESQXX5LmmFLlEIK314BKmwfCWKeAtLLAeyqyUi0P\nhZleYDwC2wKBgBQ1NFXd+gvAkyFaEB/SOHy2iXUHxHWb8MvAEB5w8XmeyvCmDXZP\nWrC2WDfdAbep7QUaocSwMaN0N9NN9YMc0r8j3yk7J5ASYAeuc2y1leYx4T17lRBJ\nos10QfmDIulRbX7d83XGFkOzrj8AQBVJfh9Z+5CZqeqfUSlORCz76Uw9AoGBAJoW\neRPudI+4x8DeZ1n0XrKdEYQnCNruowZTnaTn49EKOoriD0ui2WvpUG1i/WUp1zM0\nIgwqJxDEE26Zp7qwaoYyJyY1D0nuLLVH+TN6DMfwAZnYyXy9SYLDPItul4MtRn1L\nU/ygBJqSapUBbbGI9fbe2R2rOsQFSbVu4SeEz4HNAoGAdY5R9TvDL+bJu3DzzDfb\nx+ohNufH8qPrIIeJlSJqkIyA65JO6lwoarKB+diYeBb6bTuM7/Km9CfE8Jm2YDj5\npuIrUN1ITlueenm2jAp1HkzrJAW+fXsc/sa0eDpL5w3ZS2TtHyikGapnQF4zhja4\nRIVdyQLEqQrNe+cXblOw624=\n-----END PRIVATE KEY-----\n",
+  "client_email": "phonetics-bot@phonetics-storage.iam.gserviceaccount.com",
+  "client_id": "100803305606574263650",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/phonetics-bot%40phonetics-storage.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
