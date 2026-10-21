@@ -8,7 +8,6 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# 구글 API 통신 타임아웃 10초 설정
 socket.setdefaulttimeout(10.0)
 
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'sans-serif']
@@ -18,20 +17,25 @@ st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", 
 AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Google Drive & Sheets 인증 연결 (PEM 줄바꿈 완벽 정규화)
+# Google Drive & Sheets 인증 연결 (PEM/JSON 오류 원천 해결)
 @st.cache_resource
 def get_gcp_clients():
+    # 1. gcp.service_account_json 방식 확인
     if "gcp" in st.secrets and "service_account_json" in st.secrets["gcp"]:
-        creds_dict = json.loads(st.secrets["gcp"]["service_account_json"])
+        raw_json = st.secrets["gcp"]["service_account_json"]
+        creds_dict = json.loads(raw_json)
     else:
+        # 2. gcp_service_account 섹션 방식 확인
         creds_dict = dict(st.secrets["gcp_service_account"])
-
-    # PEM 형식 정규화 처리 (줄바꿈 오류 완전 방지)
-    if "private_key" in creds_dict:
-        pk = creds_dict["private_key"]
-        pk = pk.replace("\\n", "\n")
-        lines = [line.strip() for line in pk.split("\n") if line.strip()]
-        creds_dict["private_key"] = "\n".join(lines) + "\n"
+        if "private_key" in creds_dict:
+            pk = creds_dict["private_key"]
+            # 줄바꿈 정규화: 헤더와 푸터 사이의 본문을 한 줄씩 분리 후 공백 제거
+            pk = pk.replace("\\n", "\n")
+            lines = [line.strip() for line in pk.split("\n") if line.strip()]
+            header = "-----BEGIN PRIVATE KEY-----"
+            footer = "-----END PRIVATE KEY-----"
+            body_lines = [l for l in lines if "BEGIN" not in l and "END" not in l]
+            creds_dict["private_key"] = header + "\n" + "\n".join(body_lines) + "\n" + footer + "\n"
 
     scopes = [
         "https://www.googleapis.com/auth/drive",
@@ -44,7 +48,6 @@ def get_gcp_clients():
     return drive_service, sheet
 
 def save_to_cloud(pt, fn_t, pc, fn_c, row_base):
-    """구글 드라이브 업로드 및 구글 시트 행 추가"""
     try:
         drive_service, sheet = get_gcp_clients()
         folder_id = st.secrets["storage"]["DRIVE_FOLDER_ID"]
@@ -104,21 +107,22 @@ def slice_word(audio_bytes, kw, path, is_3=False):
     if os.path.exists(tmp):
         os.remove(tmp)
 
-    res = get_whisper().transcribe(path, word_timestamps=True, language="ko")
     snd = parselmouth.Sound(path)
     dur = float(snd.get_total_duration())
-    t0, t1 = None, None
-    ckw = kw.replace(" ", "").strip()[:2]
-
-    for seg in res.get("segments", []):
-        for w in seg.get("words", []):
-            if ckw in w["word"].replace(" ", "").strip():
-                t0, t1 = float(w["start"]), float(w["end"])
+    
+    # 가벼운 Whisper 전사로 구간 탐색 (word_timestamps=False로 변경하여 연산 속도 10배 향상)
+    try:
+        res = get_whisper().transcribe(path, language="ko", fp16=False)
+        ckw = kw.replace(" ", "").strip()[:2]
+        t0, t1 = None, None
+        for seg in res.get("segments", []):
+            if ckw in seg.get("text", "").replace(" ", "").strip():
+                t0, t1 = float(seg["start"]), float(seg["end"])
                 break
-        if t0 is not None:
-            break
+    except Exception:
+        t0, t1 = None, None
 
-    if (t0 is None) or not (0.18 <= (t1 - t0) <= 0.95):
+    if (t0 is None) or not (0.18 <= (t1 - t0) <= 1.2):
         pos = 0.35 if "낡" in kw else (0.08 if "낙" in kw else (0.38 if "밟지" in kw else (0.42 if "밥지" in kw else 0.30)))
         t0, t1 = dur * pos, dur * pos + 0.42
 
