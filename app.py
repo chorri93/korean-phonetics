@@ -33,7 +33,7 @@ def get_gcp_clients():
     return drive_service, sheet
 
 def save_to_cloud(pt, fn_t, pc, fn_c, row_base):
-    """구글 드라이브 업로드 및 구글 시트 행 추가를 수행하고 결과를 반환"""
+    """구글 드라이브 업로드 및 구글 시트 행 추가"""
     try:
         drive_service, sheet = get_gcp_clients()
         folder_id = st.secrets["storage"]["DRIVE_FOLDER_ID"]
@@ -207,7 +207,7 @@ if mode == "학생 발음 실험 참여":
 
         col_t, col_c = st.columns(2)
         with col_t:
-            st.warning("🗣️ **문장 1: " + task['s_t'] + "**")
+            st.warning("🗣️ 문장 1: " + task['s_t'])
             if st.session_state[kt] is None:
                 rt = mic_recorder(start_prompt="🔴 문장 1 녹음", stop_prompt="⏹️ 완료", key="rt_" + str(task['id']) + "_" + str(step))
                 if rt and rt.get("bytes"):
@@ -220,7 +220,7 @@ if mode == "학생 발음 실험 참여":
                     st.rerun()
 
         with col_c:
-            st.info("🗣️ **문장 2: " + task['s_c'] + "**")
+            st.info("🗣️ 문장 2: " + task['s_c'])
             if st.session_state[kc] is None:
                 rc = mic_recorder(start_prompt="🔴 문장 2 녹음", stop_prompt="⏹️ 완료", key="rc_" + str(task['id']) + "_" + str(step))
                 if rc and rc.get("bytes"):
@@ -235,10 +235,10 @@ if mode == "학생 발음 실험 참여":
         if st.session_state[kt] and st.session_state[kc]:
             st.markdown("---")
             opts = [c.split(" ")[0] for c in task["cand"]]
-            u_perc = st.radio("🤔 방금 읽으신 '" + task['disp_t'] + "'를 어떻게 발음했다고 느끼셨나요?", opts, key="p_" + str(step), horizontal=True)
+            u_perc = st.radio("방금 읽으신 '" + task['disp_t'] + "'를 어떻게 발음했다고 느끼셨나요?", opts, key="p_" + str(step), horizontal=True)
 
             if not name.strip():
-                st.error("⚠️ 1단계에서 이름을 입력해 주세요.")
+                st.error("1단계에서 이름을 입력해 주세요.")
             elif st.button("🚀 녹음 완료 및 음향 분석 실행", key="run_" + str(step), type="primary", use_container_width=True):
                 with st.spinner("스펙트로그램 분석 및 클라우드 영구 저장 중..."):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -252,7 +252,6 @@ if mode == "학생 발음 실험 참여":
                     m_t, m_c = get_metrics(s_t, gender), get_metrics(s_c, gender)
                     verdict, drop_pct, ratio, exp = classify(m_t, m_c, task)
 
-                    # 동기 저장 실행 및 결과 상태 확인
                     row_base = [
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         name.strip(), gender, int(age), region,
@@ -272,9 +271,8 @@ if mode == "학생 발음 실험 참여":
             r = st.session_state["res_" + str(step)]
             st.markdown("---")
             
-            # 클라우드 저장 성공/실패 여부를 화면 상단에 즉시 표시
             if r.get("cloud_ok"):
-                st.success("☁️ Google Drive 및 스프레드시트에 영구 보관되었습니다.")
+                st.success("☁️ Google Drive 및 스프레드시트에 안전하게 저장되었습니다.")
             else:
                 st.error("❌ 구글 클라우드 저장 실패 원인: " + str(r.get("cloud_msg")))
 
@@ -284,11 +282,84 @@ if mode == "학생 발음 실험 참여":
             for i, cand in enumerate(r["task"]["cand"]):
                 with cols[i]:
                     if cand == r["verdict"]:
-                        st.markdown("<div style='border: 3px solid #FF4B4B; background: rgba(255,75,75,0.08); padding: 12px; border-radius: 8px; text-align: center;'><b style='color:#FF4B4B;'>👉 음향 분석 판정형</b><div style='font-size:22px; font-weight:900;'>" + str(cand) + "</div><small>(" + labs[i] + ")</small></div>", unsafe_allow_html=True)
+                        st.info("👉 음향 분석 판정형\n### " + str(cand) + "\n(" + labs[i] + ")")
                     else:
-                        st.markdown("<div style='border: 1px solid #DDD; background: #FAFAFA; padding: 12px; border-radius: 8px; text-align: center; opacity: 0.65;'><small>후보</small><div style='font-size:16px;'>" + str(cand) + "</div><small>(" + labs[i] + ")</small></div>", unsafe_allow_html=True)
+                        st.text("후보\n" + str(cand) + "\n(" + labs[i] + ")")
 
             is_eq = (r["perc"] in r["verdict"])
-            b_col = "#2E7D32" if is_eq else "#D97706"
-            b_txt = "✅ 자각 발음과 스펙트로그램 음향 판정이 일치합니다." if is_eq else "⚡ 자각 발음과 스펙트로그램 음향 판정 간 차이가 확인되었습니다."
-            st.markdown("<div style='border-left: 5px solid " + b_col + "; background: #F9FAFB; padding: 12px; border-radius: 6px; margin: 12px 0;'><b>" + b
+            if is_eq:
+                st.success("✅ 자각 발음과 스펙트로그램 음향 판정이 일치합니다.\n• 자각: " + str(r['perc']) + " | • 판정: " + str(r['verdict']))
+            else:
+                st.warning("⚡ 자각 발음과 스펙트로그램 음향 판정 간 차이가 확인되었습니다.\n• 자각: " + str(r['perc']) + " | • 판정: " + str(r['verdict']))
+
+            st.write("💡 **분석 해설:** " + r['exp'])
+            st.info("📘 **관련 규정:** " + r['task']['rule'])
+            st.pyplot(plot_spec(r["m_t"], r["m_c"]))
+
+            if st.button("다음 과제로 넘어가기 ➡️" if step + 1 < len(SETS) else "모든 실습 완료 🏁", type="primary", use_container_width=True):
+                st.session_state.step += 1
+                st.rerun()
+    else:
+        st.success("🎉 모든 실습 과제를 마쳤습니다. 참여해 주셔서 감사합니다!")
+        if st.button("🔄 처음부터 다시 하기"):
+            st.session_state.step = 0
+            st.rerun()
+
+elif mode == "교수/연구자 관리자 모드":
+    st.title("🔒 국어음운론 연구 관리자 시스템 (Cloud 연동)")
+    if "admin" not in st.session_state:
+        st.session_state.admin = False
+    if not st.session_state.admin:
+        aid, apw = st.text_input("아이디"), st.text_input("비밀번호", type="password")
+        if st.button("로그인", type="primary"):
+            if aid == "professor" and apw == "linguist2026":
+                st.session_state.admin = True
+                st.rerun()
+            else:
+                st.error("로그인 정보 불일치")
+    else:
+        if st.button("로그아웃"):
+            st.session_state.admin = False
+            st.rerun()
+
+        t1, t2 = st.tabs(["📊 통계 분석", "🎧 참가자별 클라우드 데이터 확인"])
+        df = get_sheet_data()
+
+        with t1:
+            if df.empty:
+                st.info("Google Sheets에 수집된 데이터가 없습니다.")
+            else:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("총 발화 수", str(len(df)) + " 건")
+                m2.metric("참여자 수", str(df['name'].nunique()) + " 명")
+                ed = (df['expert'] != "").sum() if 'expert' in df.columns else 0
+                m3.metric("연구자 판정 완료", str(ed) + " / " + str(len(df)) + " 건")
+
+                st.write("▼ **학생 자각 발음 분포**")
+                st.bar_chart(df['perceived'].value_counts())
+
+        with t2:
+            if df.empty:
+                st.info("Google Sheets에 수집된 데이터가 없습니다.")
+            else:
+                st.download_button("💾 전체 CSV 다운로드", df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), "corpus.csv", "text/csv")
+                names = df['name'].unique().tolist()
+                c_name = st.selectbox("조회할 참가자 선택:", names)
+                u_df = df[df['name'] == c_name].sort_values(by="task_id", ascending=True)
+
+                for _, row in u_df.iterrows():
+                    task_idx = int(row['task_id']) - 1
+                    t_info = SETS[task_idx]
+                    
+                    st.markdown("---")
+                    st.markdown("### 📌 " + t_info["title"])
+                    st.write("• 발화 일시: " + str(row['created_at']))
+                    st.write("• 기계 판정: **" + str(row['classified']) + "** | 학생 자각: **" + str(row['perceived']) + "**")
+
+                    col_u1, col_u2 = st.columns(2)
+                    with col_u1:
+                        if row.get('url_t'):
+                            st.markdown("🔗 [Google Drive에서 표적 발화 듣기](" + str(row['url_t']) + ")")
+                    with col_u2:
+                        if row.get('url_c'):
+                            st.markdown("🔗 [Google Drive에서 대조 발화 듣기](" + str(row['url_c']) + ")")
