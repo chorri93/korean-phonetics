@@ -1,12 +1,9 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 import parselmouth, whisper, numpy as np, matplotlib.pyplot as plt
-import pandas as pd, os, subprocess, socket, glob
+import pandas as pd, os, subprocess, socket
 from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from supabase import create_client, Client
 
 socket.setdefaulttimeout(10.0)
 
@@ -17,78 +14,46 @@ st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", 
 AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Google Drive & Sheets 인증 연결 (키 파일 자동 탐색)
+# Supabase 클라우드 연결
 @st.cache_resource
-def get_gcp_clients():
-    scopes = [
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/spreadsheets"
-    ]
-    
-    # 1. 저장소에 올라간 json 키 파일 자동 탐색
-    candidate_files = [
-        "google_creds.json",
-        "google_creds.json.json"
-    ] + glob.glob("*.json")
-    
-    found_file = None
-    for f in candidate_files:
-        if os.path.exists(f) and f != "package.json":
-            found_file = f
-            break
-            
-    if found_file:
-        creds = Credentials.from_service_account_file(found_file, scopes=scopes)
-    elif "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    else:
-        raise FileNotFoundError("Google 인증 키 파일(google_creds.json)을 저장소에서 찾을 수 없습니다.")
+def get_supabase_client() -> Client:
+    url = st.secrets["supabase"]["SUPABASE_URL"]
+    key = st.secrets["supabase"]["SUPABASE_KEY"]
+    return create_client(url, key)
 
-    drive_service = build('drive', 'v3', credentials=creds)
-    gc = gspread.authorize(creds)
-    sheet = gc.open_by_key(st.secrets["storage"]["SHEET_ID"]).sheet1
-    return drive_service, sheet
-
-def save_to_cloud(pt, fn_t, pc, fn_c, row_base):
+def save_to_cloud(pt, fn_t, pc, fn_c, row_dict):
     try:
-        drive_service, sheet = get_gcp_clients()
-        folder_id = st.secrets["storage"]["DRIVE_FOLDER_ID"]
+        supabase = get_supabase_client()
+        bucket_name = "audio"
 
-        # 1. 표적 음원 업로드
+        # 1. 표적 음원 Supabase Storage 업로드
         url_t = ""
         if os.path.exists(pt):
-            media_t = MediaFileUpload(pt, mimetype='audio/wav', resumable=False)
-            f_t = drive_service.files().create(
-                body={'name': fn_t, 'parents': [folder_id]},
-                media_body=media_t,
-                fields='webViewLink'
-            ).execute()
-            url_t = f_t.get('webViewLink', '')
+            with open(pt, "rb") as f:
+                supabase.storage.from_(bucket_name).upload(fn_t, f.read(), {"content-type": "audio/wav"})
+            url_t = supabase.storage.from_(bucket_name).get_public_url(fn_t)
 
-        # 2. 대조 음원 업로드
+        # 2. 대조 음원 Supabase Storage 업로드
         url_c = ""
         if os.path.exists(pc):
-            media_c = MediaFileUpload(pc, mimetype='audio/wav', resumable=False)
-            f_c = drive_service.files().create(
-                body={'name': fn_c, 'parents': [folder_id]},
-                media_body=media_c,
-                fields='webViewLink'
-            ).execute()
-            url_c = f_c.get('webViewLink', '')
+            with open(pc, "rb") as f:
+                supabase.storage.from_(bucket_name).upload(fn_c, f.read(), {"content-type": "audio/wav"})
+            url_c = supabase.storage.from_(bucket_name).get_public_url(fn_c)
 
-        # 3. 구글 시트 행 추가
-        row_data = row_base + [url_t, url_c]
-        sheet.append_row(row_data)
+        # 3. Supabase Table 행 추가
+        row_dict["url_t"] = url_t
+        row_dict["url_c"] = url_c
+        supabase.table("phonetics_records").insert(row_dict).execute()
+
         return True, "저장 성공"
     except Exception as e:
         return False, str(e)
 
 def get_sheet_data():
     try:
-        _, sheet = get_gcp_clients()
-        records = sheet.get_all_records()
-        return pd.DataFrame(records)
+        supabase = get_supabase_client()
+        res = supabase.table("phonetics_records").select("*").order("id", desc=False).execute()
+        return pd.DataFrame(res.data)
     except Exception:
         return pd.DataFrame()
 
@@ -269,14 +234,21 @@ if mode == "학생 발음 실험 참여":
                     m_t, m_c = get_metrics(s_t, gender), get_metrics(s_c, gender)
                     verdict, drop_pct, ratio, exp = classify(m_t, m_c, task)
 
-                    row_base = [
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        name.strip(), gender, int(age), region,
-                        int(task["id"]), task["disp_t"],
-                        round(float(drop_pct), 2), round(float(ratio), 2),
-                        verdict, u_perc, ""
-                    ]
-                    cloud_ok, cloud_msg = save_to_cloud(pt, fn_t, pc, fn_c, row_base)
+                    row_dict = {
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "name": name.strip(),
+                        "gender": gender,
+                        "age": int(age),
+                        "region": region,
+                        "task_id": int(task["id"]),
+                        "target_word": task["disp_t"],
+                        "drop_pct": round(float(drop_pct), 2),
+                        "dur_ratio": round(float(ratio), 2),
+                        "classified": verdict,
+                        "perceived": u_perc,
+                        "expert": ""
+                    }
+                    cloud_ok, cloud_msg = save_to_cloud(pt, fn_t, pc, fn_c, row_dict)
 
                     st.session_state["res_" + str(step)] = {
                         "verdict": verdict, "drop_pct": drop_pct, "ratio": ratio,
@@ -289,9 +261,9 @@ if mode == "학생 발음 실험 참여":
             st.markdown("---")
 
             if r.get("cloud_ok"):
-                st.success("☁️ Google Drive 및 스프레드시트에 안전하게 저장되었습니다.")
+                st.success("☁️ Supabase Cloud에 음원 및 분석 수치가 영구 저장되었습니다.")
             else:
-                st.error("❌ 구글 클라우드 저장 실패 원인: " + str(r.get("cloud_msg")))
+                st.error("❌ 클라우드 저장 실패 원인: " + str(r.get("cloud_msg")))
 
             st.subheader("🎯 스펙트로그램 음향 분석 결과")
             cols = st.columns(3)
@@ -323,7 +295,7 @@ if mode == "학생 발음 실험 참여":
             st.rerun()
 
 elif mode == "교수/연구자 관리자 모드":
-    st.title("🔒 국어음운론 연구 관리자 시스템 (Cloud 연동)")
+    st.title("🔒 국어음운론 연구 관리자 시스템 (Supabase 연동)")
     if "admin" not in st.session_state:
         st.session_state.admin = False
     if not st.session_state.admin:
@@ -344,7 +316,7 @@ elif mode == "교수/연구자 관리자 모드":
 
         with t1:
             if df.empty:
-                st.info("Google Sheets에 수집된 데이터가 없습니다.")
+                st.info("Supabase에 수집된 데이터가 없습니다.")
             else:
                 m1, m2, m3 = st.columns(3)
                 m1.metric("총 발화 수", str(len(df)) + " 건")
@@ -357,7 +329,7 @@ elif mode == "교수/연구자 관리자 모드":
 
         with t2:
             if df.empty:
-                st.info("Google Sheets에 수집된 데이터가 없습니다.")
+                st.info("Supabase에 수집된 데이터가 없습니다.")
             else:
                 st.download_button("💾 전체 CSV 다운로드", df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), "corpus.csv", "text/csv")
                 names = df['name'].unique().tolist()
@@ -376,7 +348,9 @@ elif mode == "교수/연구자 관리자 모드":
                     col_u1, col_u2 = st.columns(2)
                     with col_u1:
                         if row.get('url_t'):
-                            st.markdown("🔗 [Google Drive에서 표적 발화 듣기](" + str(row['url_t']) + ")")
+                            st.audio(row['url_t'], format="audio/wav")
+                            st.markdown("🔗 [웹에서 직접 듣기/다운로드](" + str(row['url_t']) + ")")
                     with col_u2:
                         if row.get('url_c'):
-                            st.markdown("🔗 [Google Drive에서 대조 발화 듣기](" + str(row['url_c']) + ")")
+                            st.audio(row['url_c'], format="audio/wav")
+                            st.markdown("🔗 [웹에서 직접 듣기/다운로드](" + str(row['url_c']) + ")")
