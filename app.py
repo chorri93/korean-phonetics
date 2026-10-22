@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 import parselmouth, whisper, numpy as np, matplotlib.pyplot as plt
-import pandas as pd, os, subprocess, socket, json
+import pandas as pd, os, subprocess, socket, glob
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -17,31 +17,34 @@ st.set_page_config(page_title="국어음운론 현실 발음 조사 실습실", 
 AUDIO_DIR = "recordings_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Google Drive & Sheets 인증 연결 (PEM/JSON 오류 원천 해결)
+# Google Drive & Sheets 인증 연결 (키 파일 자동 탐색)
 @st.cache_resource
 def get_gcp_clients():
-    # 1. gcp.service_account_json 방식 확인
-    if "gcp" in st.secrets and "service_account_json" in st.secrets["gcp"]:
-        raw_json = st.secrets["gcp"]["service_account_json"]
-        creds_dict = json.loads(raw_json)
-    else:
-        # 2. gcp_service_account 섹션 방식 확인
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        if "private_key" in creds_dict:
-            pk = creds_dict["private_key"]
-            # 줄바꿈 정규화: 헤더와 푸터 사이의 본문을 한 줄씩 분리 후 공백 제거
-            pk = pk.replace("\\n", "\n")
-            lines = [line.strip() for line in pk.split("\n") if line.strip()]
-            header = "-----BEGIN PRIVATE KEY-----"
-            footer = "-----END PRIVATE KEY-----"
-            body_lines = [l for l in lines if "BEGIN" not in l and "END" not in l]
-            creds_dict["private_key"] = header + "\n" + "\n".join(body_lines) + "\n" + footer + "\n"
-
     scopes = [
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/spreadsheets"
     ]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    
+    # 1. 저장소에 올라간 json 키 파일 자동 탐색
+    candidate_files = [
+        "google_creds.json",
+        "google_creds.json.json"
+    ] + glob.glob("*.json")
+    
+    found_file = None
+    for f in candidate_files:
+        if os.path.exists(f) and f != "package.json":
+            found_file = f
+            break
+            
+    if found_file:
+        creds = Credentials.from_service_account_file(found_file, scopes=scopes)
+    elif "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    else:
+        raise FileNotFoundError("Google 인증 키 파일(google_creds.json)을 저장소에서 찾을 수 없습니다.")
+
     drive_service = build('drive', 'v3', credentials=creds)
     gc = gspread.authorize(creds)
     sheet = gc.open_by_key(st.secrets["storage"]["SHEET_ID"]).sheet1
@@ -109,8 +112,7 @@ def slice_word(audio_bytes, kw, path, is_3=False):
 
     snd = parselmouth.Sound(path)
     dur = float(snd.get_total_duration())
-    
-    # 가벼운 Whisper 전사로 구간 탐색 (word_timestamps=False로 변경하여 연산 속도 10배 향상)
+
     try:
         res = get_whisper().transcribe(path, language="ko", fp16=False)
         ckw = kw.replace(" ", "").strip()[:2]
@@ -285,7 +287,7 @@ if mode == "학생 발음 실험 참여":
         if ("res_" + str(step)) in st.session_state:
             r = st.session_state["res_" + str(step)]
             st.markdown("---")
-            
+
             if r.get("cloud_ok"):
                 st.success("☁️ Google Drive 및 스프레드시트에 안전하게 저장되었습니다.")
             else:
@@ -365,7 +367,7 @@ elif mode == "교수/연구자 관리자 모드":
                 for _, row in u_df.iterrows():
                     task_idx = int(row['task_id']) - 1
                     t_info = SETS[task_idx]
-                    
+
                     st.markdown("---")
                     st.markdown("### 📌 " + t_info["title"])
                     st.write("• 발화 일시: " + str(row['created_at']))
